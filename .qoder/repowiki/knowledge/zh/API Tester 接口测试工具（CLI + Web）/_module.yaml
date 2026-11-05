@@ -1,0 +1,19 @@
+schema_version: 1
+module_path: ""
+title: API Tester 接口测试工具（CLI + Web）
+scope:
+    - README.md
+    - SKILL.md
+    - 启动.bat
+    - engine.py
+    - runner.py
+    - printer.py
+    - curl2yaml.py
+    - cases/
+    - templates/
+    - temps/
+    - app.py
+    - yaml_checker.py
+source_files: []
+depends_on: []
+related_to: []

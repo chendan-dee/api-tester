@@ -1,0 +1,70 @@
+{
+  "name": "示例接口测试",
+  "groups": [
+    "用户模块",
+    "订单模块"
+  ],
+  "steps": [
+    {
+      "name": "获取用户信息",
+      "group": "用户模块",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?userId=1001",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200
+      }
+    },
+    {
+      "name": "创建订单",
+      "group": "订单模块",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "productId": "A001",
+          "count": 2
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "json.productId": "A001"
+        }
+      }
+    },
+    {
+      "name": "模拟下单（Mock 演示）",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "mock": true
+        },
+        "timeout": 30
+      },
+      "mock": {
+        "status_code": 200,
+        "response": {
+          "code": 0,
+          "msg": "下单成功"
+        }
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "code": 0
+        }
+      }
+    }
+  ]
+}

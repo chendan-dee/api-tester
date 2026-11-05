@@ -1,0 +1,16 @@
+{
+  "transfer": {
+    "save_dir": "D:\\录制&互传",
+    "public_url": ""
+  },
+  "device_names": {
+    "mob_qfbygp": "鸿蒙手机",
+    "mob_3ki17r": "vivo",
+    "mob_dh8c7p": "vivo",
+    "mob_igccvo": "vivo",
+    "mob_jvyct1": "折叠屏鸿蒙手机",
+    "mob_verifydev": "测试设备A",
+    "mob_g1mk1t": "非常非常非常长的设备名称测试一二",
+    "mob_qp2obv": "鸿蒙手机"
+  }
+}

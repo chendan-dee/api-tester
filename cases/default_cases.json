@@ -1,0 +1,316 @@
+{
+  "groups": [
+    "用户模块",
+    "提取示例",
+    "脚本示例",
+    "参数化串联"
+  ],
+  "name": "接口用例",
+  "steps": [
+    {
+      "name": "创建订单",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post"
+      },
+      "group": "用户模块"
+    },
+    {
+      "group": "用户模块",
+      "name": "获取用户",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get"
+      }
+    },
+    {
+      "assert": {
+        "status_code": 401
+      },
+      "group": "",
+      "name": "接口测试",
+      "request": {
+        "body": {
+          "giftId": "9931273",
+          "token": "LONGa37cc06cdde14efaa6303c9ec06b93c4"
+        },
+        "headers": {
+          "Content-Type": "application/json",
+          "cookie": "gdp_user_id=gioenc-4a6g4a39%2C1d73%2C54cb%2Cc1ba%2C0b583g6b8e5d; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A9%2C%22VISIT%22%3A3%2C%22PAGE%22%3A4%2C%22VIEW_CLICK%22%3A4%7D; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458109276%22%2C%22first_id%22%3A%2219f593dab47adb-0a73e28086d9058-26061f51-2073600-19f593dab48209c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%2C%22%24latest_utm_campaign%22%3A%22LBL13220860374%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTlmNTkzZGFiNDdhZGItMGE3M2UyODA4NmQ5MDU4LTI2MDYxZjUxLTIwNzM2MDAtMTlmNTkzZGFiNDgyMDljIiwiJGlkZW50aXR5X2xvZ2luX2lkIjoiMTQ1ODEwOTI3NiJ9%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458109276%22%7D%7D; SSO-AUTH-HEADER=LONGa37cc06cdde14efaa6303c9ec06b93c4; token=LONGa37cc06cdde14efaa6303c9ec06b93c4"
+        },
+        "method": "POST",
+        "timeout": 60,
+        "url": "https://mkttest.bestwehotel.net/proxy/wehotel-member-gift/wehotel-member-gift/giftSellRecord/cancelActivityGift"
+      }
+    },
+    {
+      "name": "未命名接口",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get"
+      }
+    },
+    {
+      "name": "示例1 创建订单（提取）",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "orderNo": "${orderNo}",
+          "sku": "SKU-9",
+          "qty": 2
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "json.orderNo": "A20261105"
+        }
+      },
+      "extract": {
+        "orderNo": "json.orderNo",
+        "clientIp": "origin"
+      },
+      "group": "提取示例"
+    },
+    {
+      "name": "示例2 查询订单（引用）",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?order_no=%24%7BorderNo%7D",
+        "headers": {
+          "X-Order-No": "${orderNo}",
+          "X-Client-Ip": "${clientIp}"
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "args.order_no": "A20261105"
+        }
+      },
+      "group": "提取示例"
+    },
+    {
+      "name": "示例3 列表提取（数组）",
+      "group": "提取示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/json",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "slideshow.slides[0].title": "Wake up to WonderWidgets!"
+        }
+      },
+      "extract": {
+        "firstSlide": "slideshow.slides[0].title"
+      },
+      "extract_list": {
+        "slideTitles": "slideshow.slides[*].title",
+        "slides": "slideshow.slides"
+      }
+    },
+    {
+      "name": "示例5 逐条入参（对象数组→${item.字段}）",
+      "group": "提取示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?title=${slide.title}&type=${slide.type}",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "args.title",
+          "args.type"
+        ]
+      },
+      "foreach": {
+        "from": "slides",
+        "item": "slide"
+      }
+    },
+    {
+      "name": "示例4 逐条入参（数组→每轮一个值）",
+      "group": "提取示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?slide=${slideTitle}",
+        "headers": {
+          "X-Slide-No": "${slideTitle}"
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "args.slide"
+        ]
+      },
+      "foreach": {
+        "from": "slideTitles",
+        "item": "slideTitle"
+      }
+    },
+    {
+      "name": "接口测试",
+      "request": {
+        "url": "https://mkttest.bestwehotel.net/proxy/mkt-admin/giftInfo/sendRuleConfig",
+        "method": "GET",
+        "headers": {
+          "accept": "application/json, text/plain, */*",
+          "accept-language": "zh-CN,zh;q=0.9",
+          "cookie": "gdp_user_id=gioenc-bgb76db1%2Ccb63%2C52c2%2Ca4da%2C08c74a2e68g1; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A8%2C%22VISIT%22%3A2%2C%22PAGE%22%3A2%2C%22VIEW_CHANGE%22%3A3%2C%22VIEW_CLICK%22%3A4%7D; maliangtoken=oyFg7dkKFn66b9hxe1dm16Z/Rv7SiKy/R799s0r5C9nkzq9UOdFjNoXmutwIms+4E9pFgbo82VyXtxCMECjCATcOdOvTKWZ+72ecytahgLezoGhn6ZUIcbWpiY0flIVv; maliangtoken.sig=a6cjVgIMvbc5JkoodC8LC6O3eaEHtIJ88Nej4hQJk24; EGG_SESS=KB8sEGHjYq4LwZcOaSf3ZguDiFfSUnM-qcmtIlAWaSunwttFJX_gZvqeXaQPhXXrASo4_fUHl_7gjKyoSr-WFCimdyHaFek9U_jssSXD403jbfgzblPFPE1lQQhF09c7affFvPUqygI0mYIUm5NNMgnBMI2BqFDHCFjou7tZAhMbkXZj9B7HK8LcCrGjFxEbvr_zwuMb8reXXzB6eAQQtr23sO8DyLuShXgaV0hJ1w6Df3HGhXSh2j9awt6lRjAVl8uG9ptfJ_gjj0ohndgI2FNwr7JjRRkPGZWS59eg0pvGurSWUh3QU96wQf3gIGnoTXKun07RTc0AuiNzkElICwy6QkEUB0YHCTsmHkEET0g=; sourceType=112; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458197746%22%2C%22first_id%22%3A%221a089f9aefd108-07424cd5ca338d-26071b51-2073600-1a089f9aefe77c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMWEwODlmOWFlZmQxMDgtMDc0MjRjZDVjYTMzOGQtMjYwNzFiNTEtMjA3MzYwMC0xYTA4OWY5YWVmZTc3YyIsIiRpZGVudGl0eV9sb2dpbl9pZCI6IjE0NTgxOTc3NDYifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458197746%22%7D%7D; SSO-AUTH-HEADER=LONGad912d20ba1340f199a93c96314c1f5b; token=LONGad912d20ba1340f199a93c96314c1f5b",
+          "fizz-appid": "dbebcdcd-dcd5-40be-ba62-131413148888",
+          "priority": "u=1, i",
+          "referer": "https://mkttest.bestwehotel.net/h/admin/giftBag",
+          "sec-ch-ua": "\"Google Chrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+          "token": "LONGad912d20ba1340f199a93c96314c1f5b",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+        },
+        "timeout": 60
+      }
+    },
+    {
+      "name": "接口测试",
+      "request": {
+        "url": "https://mkttest.bestwehotel.net/proxy/mkt-admin/giftInfo/userLevel",
+        "method": "GET",
+        "headers": {
+          "Accept": "application/json, text/plain, */*",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "Connection": "keep-alive",
+          "cookie": "gdp_user_id=gioenc-bgb76db1%2Ccb63%2C52c2%2Ca4da%2C08c74a2e68g1; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A8%2C%22VISIT%22%3A2%2C%22PAGE%22%3A2%2C%22VIEW_CHANGE%22%3A3%2C%22VIEW_CLICK%22%3A4%7D; maliangtoken=oyFg7dkKFn66b9hxe1dm16Z/Rv7SiKy/R799s0r5C9nkzq9UOdFjNoXmutwIms+4E9pFgbo82VyXtxCMECjCATcOdOvTKWZ+72ecytahgLezoGhn6ZUIcbWpiY0flIVv; maliangtoken.sig=a6cjVgIMvbc5JkoodC8LC6O3eaEHtIJ88Nej4hQJk24; EGG_SESS=KB8sEGHjYq4LwZcOaSf3ZguDiFfSUnM-qcmtIlAWaSunwttFJX_gZvqeXaQPhXXrASo4_fUHl_7gjKyoSr-WFCimdyHaFek9U_jssSXD403jbfgzblPFPE1lQQhF09c7affFvPUqygI0mYIUm5NNMgnBMI2BqFDHCFjou7tZAhMbkXZj9B7HK8LcCrGjFxEbvr_zwuMb8reXXzB6eAQQtr23sO8DyLuShXgaV0hJ1w6Df3HGhXSh2j9awt6lRjAVl8uG9ptfJ_gjj0ohndgI2FNwr7JjRRkPGZWS59eg0pvGurSWUh3QU96wQf3gIGnoTXKun07RTc0AuiNzkElICwy6QkEUB0YHCTsmHkEET0g=; sourceType=112; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458197746%22%2C%22first_id%22%3A%221a089f9aefd108-07424cd5ca338d-26071b51-2073600-1a089f9aefe77c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMWEwODlmOWFlZmQxMDgtMDc0MjRjZDVjYTMzOGQtMjYwNzFiNTEtMjA3MzYwMC0xYTA4OWY5YWVmZTc3YyIsIiRpZGVudGl0eV9sb2dpbl9pZCI6IjE0NTgxOTc3NDYifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458197746%22%7D%7D; SSO-AUTH-HEADER=LONGad912d20ba1340f199a93c96314c1f5b; token=LONGad912d20ba1340f199a93c96314c1f5b",
+          "Referer": "https://mkttest.bestwehotel.net/h/admin/giftBag/grant/giftBagActDetail?id=1475&pageType=detail&selectType=activityType&active=3",
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+          "fizz-appid": "dbebcdcd-dcd5-40be-ba62-131413148888",
+          "sec-ch-ua": "\"Google Chrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+          "token": "LONGad912d20ba1340f199a93c96314c1f5b"
+        },
+        "timeout": 60
+      }
+    },
+    {
+      "name": "示例1 前置改写请求 + 后置断言",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get"
+      },
+      "pre_script": "// 前置脚本：请求发出前执行 —— 可以改 URL / 请求头 / 方法 / 请求体，也能读写变量\n// 1) 造一个变量：p1 是本接口脚本里能用，后面步骤里也能 ${demoTag} 引用\npm.variables.set('demoTag', 'demo-' + Date.now());\n\n// 2) 加/改请求头：upsert 表示有就覆盖、没有就新增（add 则总是新增）\npm.request.headers.upsert({ key: 'X-Demo-Tag', value: pm.variables.get('demoTag') });\n\n// 3) 改 URL（httpbin 会把收到的参数原样回显，方便看效果）\npm.request.url = pm.request.url + '?from=pre_script';\n\nconsole.log('前置脚本把 X-Demo-Tag 设成了', pm.variables.get('demoTag'));\n",
+      "post_script": "// 后置脚本：请求完成后执行 —— 可以读响应、加断言、把响应里的值存成变量\nconst d = pm.response.json();\nconsole.log('状态码', pm.response.code, '· 耗时', pm.response.responseTime + 'ms');\n\n// pm.test 的结果会并进本接口的断言结果里，只要有 [FAIL] 就算这条用例失败\npm.test('状态码是 200', () => pm.expect(pm.response.code).to.equal(200));\npm.test('前置加的请求头带上了', () =>\n  pm.expect(d.headers['X-Demo-Tag'] || d.headers['x-demo-tag']).to.equal(pm.variables.get('demoTag')));\npm.test('前置改的 URL 生效了', () => pm.expect(d.args.from).to.equal('pre_script'));\n\n// 存成变量，后续步骤可以 ${origin} 引用\npm.variables.set('origin', d.origin || '');\nconsole.log('已把 origin 存成变量：', pm.variables.get('origin'));\n",
+      "group": "脚本示例"
+    },
+    {
+      "group": "脚本示例",
+      "name": "示例2 后置断言并提取变量",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/json"
+      },
+      "post_script": "// 只写后置脚本也一样：断言响应结构 + 提取字段给后面的步骤用\nconst d = pm.response.json();\npm.test('状态码是 200', () => pm.expect(pm.response.code).to.equal(200));\npm.test('至少 2 页 slide', () => pm.expect(d.slideshow.slides.length).to.be.above(1));\n\n// 提取第一个标题：后续步骤用 ${slideTitle} 就能取到\npm.variables.set('slideTitle', d.slideshow.slides[0].title);\nconsole.log('第一页标题 =', pm.variables.get('slideTitle'));\n"
+    },
+    {
+      "name": "① 登录（参数化入参 userName/city）",
+      "group": "参数化串联",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "username": "${userName}",
+          "city": "${city}",
+          "pwd": "pwd-${userName}"
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "json.username",
+          "json.city"
+        ]
+      },
+      "extract": {
+        "loginToken": "json.username",
+        "loginCity": "json.city"
+      }
+    },
+    {
+      "name": "② 下单（引用 ${loginToken} 提取订单号）",
+      "group": "参数化串联",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Token": "${loginToken}"
+        },
+        "body": {
+          "token": "${loginToken}",
+          "city": "${loginCity}",
+          "orderNo": "NO-${userName}",
+          "sku": "SKU-9",
+          "qty": 2
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "json.token",
+          "json.orderNo"
+        ]
+      },
+      "extract": {
+        "orderNo": "json.orderNo",
+        "skuCode": "json.sku"
+      }
+    },
+    {
+      "name": "③ 查单（引用 ${orderNo}/${skuCode} 校验传递）",
+      "group": "参数化串联",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?orderNo=${orderNo}&token=${loginToken}&sku=${skuCode}",
+        "headers": {
+          "X-Token": "${loginToken}"
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path": {
+          "args.sku": "SKU-9"
+        },
+        "json_path_exists": [
+          "args.orderNo",
+          "args.token",
+          "args.sku"
+        ]
+      },
+      "extract": {
+        "finalOrderNo": "args.orderNo"
+      }
+    }
+  ]
+}

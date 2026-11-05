@@ -1,0 +1,39 @@
+# ── 打包产物 ──
+*.exe
+build/
+dist/
+
+# ── 运行时生成目录 ──
+transfer/
+数据生成/
+logs/
+
+# ── Python 缓存 ──
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ── 运行时数据（唯一活跃数据目录为 data/，均为本地生成不入库）──
+data/_*.json
+cases/_*.json
+
+# runtime data (local only)
+data/localdb/
+data/thumbs/
+data/capture_bodies/
+data/_datasets/
+data/_schedule_runs/
+data/_schedule_params/
+data/*.db
+data/*.sqlite
+
+# certificates / private keys - never commit
+certs/
+
+# temp & verification artifacts
+temps/
+_verify_shots/
+_tmp_*
+_compat_*.db
+*.bak
+
