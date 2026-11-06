@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""让 _tests 目录下的用例直接 import 技能源码（src/）"""
+"""让 tests 目录下的用例直接 import 技能源码（src/）"""
 import os
 import sys
 

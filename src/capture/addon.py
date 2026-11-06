@@ -786,6 +786,14 @@ def _headers_dict(msg):
 class CaptureAddon:
     """mitmproxy 生命周期钩子：改包 Mock / 断点 / 弱网 + 流量记录上报"""
 
+    def __init__(self):
+        # CONNECT 阶段失败流量关联映射：mitmproxy 对 CONNECT 失败不触发
+        # request/response/error 钩子（直接回 502），需在 server_connect_error /
+        # tls_failed_client 钩子里按连接 id 找回 flow 生成失败记录——否则
+        # 「客户端未信任代理证书」「目标不可达」类流量在列表完全不可见（遗漏）。
+        self._pending_connects = {}   # server_conn.id -> flow
+        self._pending_clients = {}    # client_conn.id -> flow
+
     def _build_record(self, flow, error=None, pending=False):
         req = flow.request
         resp = flow.response
@@ -1069,6 +1077,104 @@ class CaptureAddon:
             except Exception:
                 pass
             _enqueue(self._build_record(flow, error=err or "未知错误"))
+        except Exception:
+            pass
+
+    # ── CONNECT 阶段失败记录（客户端未装证书 / 目标不可达等流量也必须在列表可见）──
+    # mitmproxy 对 CONNECT 失败不触发 request/response/error 钩子（直接回 502 给
+    # 客户端），若无以下钩子这类流量会完全遗漏：
+    # - http_connect：缓存连接 id -> flow 映射（仅缓存，不生成记录，正常流程由
+    #   request/response 钩子记录，此处只服务失败场景的 flow 找回）；
+    # - server_connect_error：上游 DNS/端口不可达（仅 CONNECT 缓存的 flow 命中，
+    #   普通 HTTP 请求的失败由 error 钩子记录，天然不重复）；
+    # - tls_failed_client：客户端 TLS 握手失败（典型：设备未信任代理证书 / App
+    #   证书固定）——附修复提示。
+
+    def http_connect(self, flow):
+        try:
+            if _should_ignore(flow.request):
+                return None, None
+            if len(self._pending_connects) > 500 or len(self._pending_clients) > 500:
+                # 兜底防泄漏：大量挂起连接（极罕见）时清空旧映射
+                self._pending_connects.clear()
+                self._pending_clients.clear()
+            try:
+                self._pending_connects[flow.server_conn.id] = flow
+            except Exception:
+                pass
+            try:
+                self._pending_clients[flow.client_conn.id] = flow
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return None, None
+
+    def server_connected(self, data):
+        """上游连接建立成功：移除缓存（此后不会再触发 server_connect_error）。
+
+        注意不能用 server_connect（它在连接尝试开始时就触发，成功与否未知），
+        否则 server_connect_error 到来前 flow 已被弹出、失败记录丢失。
+        """
+        try:
+            self._pending_connects.pop(data.server.id, None)
+        except Exception:
+            pass
+
+    def server_connect_error(self, data):
+        """上游连接失败（CONNECT 场景）：生成失败记录，避免列表完全空白"""
+        try:
+            flow = self._pending_connects.pop(data.server.id, None)
+            if flow is None or flow.request is None:
+                return
+            if flow.request.method != "CONNECT":
+                return
+            if _should_ignore(flow.request):
+                return
+            if not _source_allowed(flow):
+                return
+            err = ""
+            try:
+                err = str(data.server.error or "").strip()
+            except Exception:
+                pass
+            rec = self._build_record(flow, error=err or "上游连接失败")
+            rec["status"] = None  # CONNECT 未成功：不允许残留合成状态码误导
+            _enqueue(rec)
+        except Exception:
+            pass
+
+    def tls_established_client(self, data):
+        """客户端 TLS 握手成功：移除缓存（此后不会再触发 tls_failed_client）"""
+        try:
+            self._pending_clients.pop(data.conn.id, None)
+        except Exception:
+            pass
+
+    def tls_failed_client(self, data):
+        """客户端 TLS 握手失败：生成失败记录并附修复提示（列表可见才可诊断）"""
+        try:
+            flow = self._pending_clients.pop(data.conn.id, None)
+            if flow is None or flow.request is None:
+                return
+            if _should_ignore(flow.request):
+                return
+            if not _source_allowed(flow):
+                return
+            # 上游 TLS 同时失败时优先提示上游问题（否则提示「未信任代理证书」会误导）
+            srv_err = ""
+            try:
+                srv_err = str(getattr(flow.server_conn, "error", "") or "").strip()
+            except Exception:
+                pass
+            if srv_err:
+                msg = "上游 TLS 握手失败：" + srv_err
+            else:
+                msg = ("客户端 TLS 握手失败：客户端可能未信任代理证书，"
+                       "请在设备上安装并信任工具箱 CA；已安装仍失败则可能是 App 证书固定（SSL Pinning）")
+            rec = self._build_record(flow, error=msg)
+            rec["status"] = None  # CONNECT 的 200 合成响应不代表真实业务状态
+            _enqueue(rec)
         except Exception:
             pass
 

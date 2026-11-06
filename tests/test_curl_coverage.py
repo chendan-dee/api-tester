@@ -5,7 +5,7 @@ fidelity（随机保真）只证一致性，本文件证两件事：
   A. 需要文件 / 本地环境 / 多请求的写法，解析后绝不能静默消失，必须出现在 warnings；
   B. 上一轮补齐的缺口（-H @file / 多次 --url / --json @file / 扩展方法）不回退。
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q test_curl_coverage.py
+运行：cd .qoder/skills/api-tester/tests ; pytest -q test_curl_coverage.py
 """
 import pytest
 

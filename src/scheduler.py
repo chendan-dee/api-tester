@@ -18,11 +18,13 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import threading
 import time
 import contextlib
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 if _dir not in sys.path:
@@ -74,6 +76,9 @@ def _load_tasks_from_disk():
     for t in _tasks:
         if t.get("state") == "running":
             t["state"] = "waiting"
+        # 旧任务没有自定义名：补一个，列表里不再只显示用例文件名
+        if not str(t.get("name", "")).strip():
+            t["name"] = _default_name(t.get("file", ""), t.get("steps", ""))
         if t.get("enabled") and t.get("state") in ("waiting", None):
             _init_schedule(t, now)
 
@@ -100,6 +105,89 @@ def _find(tid):
 def _gen_id():
     import uuid
     return "sch_" + uuid.uuid4().hex[:8]
+
+
+MAX_NAME_LEN = 40
+
+# 这些步骤名区分不出接口（建用例时的默认名），改用 URL 路径末段做标签
+_GENERIC_STEP_NAMES = {"接口测试", "未命名接口", "新接口", "接口", "未命名", "test", "api", "step"}
+_VAR_REF_RE = re.compile(r"\$\{[^}]*\}")   # ${item.字段} 这类变量占位是噪音，从名字里剔掉
+
+
+def _url_hint(url):
+    """从 URL 取能认出接口的一段（路径末段），忽略 query 与变量占位"""
+    try:
+        p = urlparse(str(url or "").strip())
+    except ValueError:
+        return ""
+    segs = [s for s in (p.path or "").split("/") if s]
+    while segs and segs[-1].startswith("$"):
+        segs.pop()
+    if segs:
+        return segs[-1][:24]
+    return (p.netloc or "").split(".")[0][:24]
+
+
+def _clean_label(text, limit):
+    """去变量占位、压空白、超长截断加省略号（单段限长，避免拼接时断在半句）"""
+    s = re.sub(r"\s+", " ", _VAR_REF_RE.sub("", str(text or ""))).strip()
+    return s[:limit] + ("…" if len(s) > limit else "")
+
+
+def _step_label(step):
+    """步骤的可辨识标签：优先步骤名，步骤名是「接口测试」这类泛化名时退到 URL 末段"""
+    step = step or {}
+    nm = str(step.get("name") or "").strip()
+    low = nm.lower()
+    generic = (not nm) or low in _GENERIC_STEP_NAMES or bool(re.match(r"^(step|步骤|接口)\s*\d+$", low))
+    if not generic:
+        return _clean_label(nm, 18)
+    return _clean_label(_url_hint((step.get("request") or {}).get("url", "")), 24) or _clean_label(nm, 18)
+
+
+def _default_name(filename, step_filter=""):
+    """默认任务名：所选步骤的可辨识标签按执行顺序串联，退化到用例文件名
+
+    用户不填名字时也要能区分任务，所以不从固定模板拼「定时任务1」这类无意义名称；
+    步骤名重复（如两次都叫「接口测试」）的连续项只保留一个。
+    """
+    stem = os.path.splitext(os.path.basename(str(filename)))[0]
+    path = _safe_case_path(filename) if filename else None
+    if not path or not os.path.exists(path):
+        return stem[:MAX_NAME_LEN]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f) or {}
+    except (IOError, json.JSONDecodeError):
+        return stem[:MAX_NAME_LEN]
+    all_steps = cfg.get("steps") or []
+    picked = all_steps
+    nums = []
+    for s in str(step_filter or "").split(","):
+        s = s.strip()
+        if s.isdigit():
+            nums.append(int(s))
+    if nums:
+        picked = [all_steps[n - 1] for n in nums if 1 <= n <= len(all_steps)]
+    labels = [lbl for lbl in (_step_label(s) for s in picked) if lbl]
+    if not labels:
+        return stem[:MAX_NAME_LEN]
+    uniq = []
+    for lbl in labels:
+        if not uniq or uniq[-1] != lbl:
+            uniq.append(lbl)
+    # 按长度决定能拼几段（最多 3 段），放不下就少拼一段，不留断在中间的半句
+    head = ""
+    for lbl in uniq[:3]:
+        cand = lbl if not head else head + " → " + lbl
+        if head and len(cand) > MAX_NAME_LEN:
+            break
+        head = cand
+    if not head:
+        head = uniq[0]
+    if len(labels) > 3 and len(head) + 6 <= MAX_NAME_LEN:
+        head += " 等%d步" % len(labels)
+    return head[:MAX_NAME_LEN]
 
 
 # ═══════════════════════════════════════════════════
@@ -471,6 +559,7 @@ def execute_file(filename, step_filter="", loops=1, row_sets=None):
                     "req_body": _resolved_cfg.get("body"),
                     "req_params": _resolved_cfg.get("params"),
                     "req_headers": _resolved_cfg.get("headers") or {},
+                    "latin1_headers": result.get("latin1_headers") or [],
                 }
             else:
                 ok, msgs = E.run_assert(
@@ -500,6 +589,11 @@ def execute_file(filename, step_filter="", loops=1, row_sets=None):
                     "req_body": _resolved_cfg.get("body"),
                     "req_params": _resolved_cfg.get("params"),
                     "req_headers": _resolved_cfg.get("headers") or {},
+                    "latin1_headers": result.get("latin1_headers") or [],
+                    "resp_headers": result.get("resp_headers") or {},
+                    "resp_latin1_headers": result.get("resp_latin1_headers") or [],
+                    "binary_resp": result.get("binary_resp", False),
+                    "resp_ct": result.get("resp_ct") or "",
                 }
         if loop_num is not None:
             record["loop"] = loop_num
@@ -848,8 +942,14 @@ def create_task(payload):
     if perr:
         return False, perr
 
+    # 任务名：用户可自定义；留空时按所选接口名自动生成（仍可区分不同任务）
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        name = _default_name(file, str(payload.get("steps", "")).strip())
+
     task = {
         "id": _gen_id(),
+        "name": name[:MAX_NAME_LEN],
         "file": file,
         "steps": str(payload.get("steps", "")).strip(),
         "loops": min(max(1, loops), 100),
@@ -894,9 +994,21 @@ def update_task(tid, patch):
                     t["state"] = "paused"
                     t["enabled"] = enabled
         if "file" in patch:
+            old_file = t.get("file", "")
             t["file"] = str(patch["file"]).strip()
+            # 名字还是旧文件自动生成的那份（用户没自定义过）→ 跟着新文件重算
+            if t.get("name") == _default_name(old_file, t.get("steps", "")):
+                t["name"] = _default_name(t["file"], t.get("steps", ""))
+        if "name" in patch:
+            nm = str(patch["name"] or "").strip()
+            if not nm:
+                return False, "任务名不能为空"
+            t["name"] = nm[:MAX_NAME_LEN]
         if "steps" in patch:
+            old_auto = _default_name(t.get("file", ""), t.get("steps", ""))
             t["steps"] = str(patch["steps"]).strip()
+            if t.get("name") == old_auto:
+                t["name"] = _default_name(t.get("file", ""), t["steps"])
         if "loops" in patch:
             try:
                 t["loops"] = min(max(1, int(patch["loops"])), 100)

@@ -23,7 +23,9 @@ DATASET_DIR = os.path.join(DATA_DIR, "_datasets")
 ACTIVE_FILE = os.path.join(DATA_DIR, "_dataset_active.json")
 
 _LOCK = threading.Lock()
-_REF_RE = re.compile(r"\$\{\s*([A-Za-z_][\w\-]*)\s*\}")
+# ${...} 引用：列名可以是中文（如「姓名」「手机号」）或任意非 {} 字符，
+# 不能用 [A-Za-z_] 限定英文——中文列头写的 ${姓名} 会被当成未引用，参数化不展开
+_REF_RE = re.compile(r"\$\{\s*([^{}]+?)\s*\}")
 
 
 # ── 基础工具 ────────────────────────────────────────────
@@ -204,7 +206,12 @@ def rows_for_steps(ordered_steps):
         blob = json.dumps([s for _i, s in (ordered_steps or [])], ensure_ascii=False)
     except Exception:
         return None
-    used = set(_REF_RE.findall(blob))
+    used = set()
+    for m in _REF_RE.finditer(blob):
+        # 引用可能是 ${姓名} 或 ${姓名.字段}：与列头比对用根名（去掉 .字段 / [下标]）
+        head = re.split(r"[.\[]", m.group(1).strip(), 1)[0].strip()
+        if head:
+            used.add(head)
     if not used:
         return None
     cols = [h for h in data["headers"] if h in used]
@@ -218,6 +225,19 @@ def rows_for_steps(ordered_steps):
             vals[c] = row[idx] if idx < len(row) else ""
         out.append(("第%d行" % i, vals))
     return out
+
+
+def first_row_for_steps(ordered_steps):
+    """单次发送（即发即看）只能跑一行，取当前数据集第一行
+
+    返回 {"name": 数据集名, "label": 行标签, "values": {字段: 值}}；
+    当前接口没引用任何数据集字段时返回 None。
+    """
+    rows = rows_for_steps(ordered_steps)
+    if not rows:
+        return None
+    label, vals = rows[0]
+    return {"name": active_name(), "label": label, "values": vals}
 
 
 # ── 导入 Excel / CSV ────────────────────────────────────

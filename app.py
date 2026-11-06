@@ -1156,7 +1156,9 @@ def api_send():
 
     返回:
       ok / status_code / elapsed_ms / resp_headers / resp_body / resp_json
-      is_mock / seq_used / asserts / assert_passed / extracted / error
+      is_mock / seq_used / ds_used / asserts / assert_passed / extracted / error
+
+    ds_used：本次单发用了哪行数据集合（{name, label, values}；没引用时为 None）
     """
     payload = request.get_json(silent=True) or {}
     step = payload.get("step")
@@ -1181,7 +1183,20 @@ def api_send():
             except Exception:
                 pass
 
-    variables = dict(_load_variables_values())
+    # 数据集合参数化：即发即看只发一次，用当前数据集的第一行（串联/批量执行才逐行展开）
+    # 取值优先级与 /api/run 一致：提取 > 变量管理（环境/全局） > 数据集合，所以数据集先铺底
+    variables = {}
+    ds_used = None
+    try:
+        import dataset as DS
+        ds_row = DS.first_row_for_steps([(1, step)])
+    except Exception:
+        ds_row = None
+    if ds_row:
+        ds_used = ds_row
+        variables.update(ds_row.get("values") or {})
+
+    variables.update(_load_variables_values())
     if setup_cfg:
         setup_vars, _ = E.eval_setup(setup_cfg)
         variables.update(setup_vars)
@@ -1231,6 +1246,11 @@ def api_send():
         "resp_json": result["resp_json"],
         "is_mock": result.get("is_mock", False),
         "seq_used": result.get("seq_used") or {},
+        "latin1_headers": result.get("latin1_headers") or [],
+        "resp_latin1_headers": result.get("resp_latin1_headers") or [],
+        "binary_resp": result.get("binary_resp", False),
+        "resp_ct": result.get("resp_ct") or "",
+        "ds_used": ds_used,
         "asserts": msgs,
         "assert_passed": passed,
         "extracted": extracted,
@@ -1517,6 +1537,11 @@ def run_test_stream():
                     "extracted": extracted,
                     "is_mock": result.get("is_mock", False),
                     "seq_used": result.get("seq_used") or {},
+                    "latin1_headers": result.get("latin1_headers") or [],
+                    "resp_headers": result.get("resp_headers") or {},
+                    "resp_latin1_headers": result.get("resp_latin1_headers") or [],
+                    "binary_resp": result.get("binary_resp", False),
+                    "resp_ct": result.get("resp_ct") or "",
                 }
 
         record["console"] = buf.getvalue()
@@ -1679,6 +1704,7 @@ def run_test_stream():
                                 "response": result["error"], "extracted": [],
                                 "is_mock": False,
                                 "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
+                                "latin1_headers": result.get("latin1_headers") or [],
                             }
                         else:
                             ok, msgs = E.run_assert(
@@ -1722,6 +1748,11 @@ def run_test_stream():
                                 "is_mock": result.get("is_mock", False),
                                 "seq_used": result.get("seq_used") or {},
                                 "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
+                                "latin1_headers": result.get("latin1_headers") or [],
+                                "resp_headers": result.get("resp_headers") or {},
+                                "resp_latin1_headers": result.get("resp_latin1_headers") or [],
+                                "binary_resp": result.get("binary_resp", False),
+                                "resp_ct": result.get("resp_ct") or "",
                             }
 
                     # 脚本产物：脚本日志与出错信息附在这条记录上（断言已并进 asserts）
@@ -2107,18 +2138,34 @@ def preview_extract():
     })
 
 
-def _find_array_by_name(obj, name, prefix="", max_depth=15, results=None):
-    """按 key 名称查找数组（默认深度 15，遍历所有数组元素）。
-    对每个数组都完整遍历其所有元素，保证同名数组在所有兄弟节点上都能被发现。"""
+def _match_array_name(struct_path, key, lname):
+    """数组名匹配（lname 已小写）。两种写法：
+      - 纯名称（address_list）：按 key 匹配，大小写不敏感
+      - 带点路径（user_info.address_list 或 [*].user_info.address_list）：
+        按结构路径匹配（[N] 归一为 [*]，取后缀）
+    """
+    if "." not in lname and "[" not in lname:
+        return key.lower() == lname
+    return struct_path == lname or struct_path.endswith("." + lname)
+
+
+def _find_array_by_name(obj, name, prefix="", max_depth=30, results=None):
+    """按 key 名称查找数组（默认深度 30，遍历所有数组元素）。
+    对每个数组都完整遍历其所有元素，保证同名数组在所有兄弟节点上都能被发现。
+    名称支持纯名称与带点路径（见 _match_array_name）。"""
     if results is None:
         results = []
     if max_depth <= 0:
         return results
+    import re
+    lname = (name or "").strip().lower()
     if isinstance(obj, dict):
         for k, v in obj.items():
             path = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, list) and len(v) > 0 and k == name:
-                results.append(path)
+            if isinstance(v, list):
+                struct = re.sub(r'\[\d+\]', '[*]', path).lower()
+                if _match_array_name(struct, k, lname):
+                    results.append(path)
             _find_array_by_name(v, name, path, max_depth - 1, results)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
@@ -2126,17 +2173,21 @@ def _find_array_by_name(obj, name, prefix="", max_depth=15, results=None):
     return results
 
 
-def _find_array_by_name_deep(obj, name, prefix="", max_depth=25, results=None):
+def _find_array_by_name_deep(obj, name, prefix="", max_depth=50, results=None):
     """极端深度搜索按名称查找数组（仅用于检测浅层默认深度之外是否有遗漏）"""
     if results is None:
         results = []
     if max_depth <= 0:
         return results
+    import re
+    lname = (name or "").strip().lower()
     if isinstance(obj, dict):
         for k, v in obj.items():
             path = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, list) and len(v) > 0 and k == name:
-                results.append(path)
+            if isinstance(v, list):
+                struct = re.sub(r'\[\d+\]', '[*]', path).lower()
+                if _match_array_name(struct, k, lname):
+                    results.append(path)
             _find_array_by_name_deep(v, name, path, max_depth - 1, results)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
@@ -2144,7 +2195,7 @@ def _find_array_by_name_deep(obj, name, prefix="", max_depth=25, results=None):
     return results
 
 
-def _find_array_paths(obj, prefix="", max_depth=15, results=None):
+def _find_array_paths(obj, prefix="", max_depth=30, results=None):
     """递归搜索 JSON 中所有数组类型的路径。
     遍历所有元素以发现完整路径并统计 count，然后按结构路径聚合：
     相同 schema 的兄弟数组合并为一条（如 data[*].orders），count 为元素总数。
@@ -2161,23 +2212,32 @@ def _find_array_paths(obj, prefix="", max_depth=15, results=None):
 
 
 def _collect_arrays_raw(obj, prefix, max_depth, raw):
-    """收集所有数组的 (path, count) 原始数据，不做聚合。"""
+    """收集所有数组的 (path, count) 原始数据，不做聚合。
+
+    数组无论作为 dict 值还是数组元素（多维数组）都会收集，空数组也保留
+    （count=0）：只以 dict 值为入口会把数组套数组的层级丢掉，例如
+    {"a": [[1,2],[3,4]]} 的内层 a[0]、a[1] 永远发现不了。
+    """
     if max_depth <= 0 or obj is None:
         return
     if isinstance(obj, dict):
         for k, v in obj.items():
             path = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, list) and len(v) > 0:
+            if isinstance(v, list):
                 raw.append((path, len(v)))
             _collect_arrays_raw(v, path, max_depth - 1, raw)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
-            _collect_arrays_raw(item, f"{prefix}[{i}]", max_depth - 1, raw)
+            item_path = f"{prefix}[{i}]"
+            if isinstance(item, list):
+                raw.append((item_path, len(item)))  # 多维数组的内层也收集
+            _collect_arrays_raw(item, item_path, max_depth - 1, raw)
 
 
 def _aggregate_by_structure(raw_pairs):
     """按结构路径聚合：将 data[0].orders、data[1].orders、… 合并为 data[*].orders。
-    保留第一个具体路径作为示例，count 为所有兄弟数组的元素总数，examples 收集全部具体路径。"""
+    保留第一个具体路径作为示例，count 为所有兄弟数组的元素总数，
+    examples 收集具体路径（最多 8 个，多维数组展开后避免示例标签爆炸）。"""
     import re
     aggregated = {}  # struct_path -> (total_count, example_path, examples_list)
     for path, count in raw_pairs:
@@ -2187,12 +2247,72 @@ def _aggregate_by_structure(raw_pairs):
             aggregated[struct] = (count, path, [path])
         else:
             old_count, example, examples = aggregated[struct]
-            examples.append(path)  # 收集所有具体路径，不限制数量
+            if len(examples) < 8:
+                examples.append(path)
             aggregated[struct] = (old_count + count, example, examples)
     return [(struct, total, example, examples) for struct, (total, example, examples) in aggregated.items()]
 
 
-def _find_array_paths_deep(obj, prefix="", max_depth=25, results=None):
+def _type_name(v):
+    """JSON 值的人类可读类型名：bool/number/string/null/array，其余退回原生类型名"""
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str):
+        return "string"
+    if v is None:
+        return "null"
+    if isinstance(v, list):
+        return "array"
+    return type(v).__name__
+
+
+def _clip_sample(v, limit=30):
+    s = str(v)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _summarize_structure(item, max_depth=8):
+    """数组元素（dict）的嵌套结构摘要：递归展开嵌套对象/数组，生成层级列表。
+
+    返回扁平列表 [(路径, 描述), ...]，描述形如：
+      'object'           — 对象节点，路径可继续展开
+      'array[3]'         — 数组节点，3 为元素数
+      'array[0]·empty'   — 空数组节点
+      'string=张三'       — 标量，示例值截断到 30 字符
+    数组节点仅深入第一个元素（结构探针），避免大报文展开过深。
+    """
+    out = []
+
+    def walk(obj, prefix, depth):
+        if depth <= 0 or obj is None:
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                p = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, dict):
+                    out.append((p, "object"))
+                    walk(v, p, depth - 1)
+                elif isinstance(v, list):
+                    n = len(v)
+                    if n and isinstance(v[0], dict):
+                        out.append((p, f"array[{n}]"))
+                        walk(v[0], p + "[0]", depth - 1)
+                    else:
+                        out.append((p, f"array[{n}]" + (f"·{_type_name(v[0])}" if n else "·empty")))
+                else:
+                    out.append((p, f"{_type_name(v)}={_clip_sample(v)}"))
+        elif isinstance(obj, list):
+            for i, it in enumerate(obj):
+                walk(it, f"{prefix}[{i}]", depth - 1)
+
+    if isinstance(item, dict):
+        walk(item, "", max_depth)
+    return out
+
+
+def _find_array_paths_deep(obj, prefix="", max_depth=50, results=None):
     """极端深度搜索数组路径（用于检测浅层默认深度之外是否仍有遗漏）。
     逻辑与 _find_array_paths 一致：收集所有原始路径后按结构聚合。"""
     if results is None:
@@ -2271,6 +2391,7 @@ def detect_arrays():
         info = {"path": struct_path, "count": total_count, "fields": [], "example_path": example_path, "examples": examples}
         if arr and isinstance(arr[0], dict):
             info["fields"] = list(arr[0].keys())
+            info["structure"] = _summarize_structure(arr[0])
         arrays.append(info)
 
     result_data = {"ok": True, "arrays": arrays, "total": len(arrays)}
@@ -2326,20 +2447,29 @@ def detect_arrays_json():
 
     import engine as E
 
-    # ── 按名称搜索模式（遍历所有数组元素，深度 15）──
+    # ── 按名称搜索模式（遍历所有数组元素，深度 30）──
     if array_name:
         search_root = resp_json
         found_paths = _find_array_by_name(search_root, array_name)
         result_data = {"ok": True, "arrays": [], "total": 0,
                        "mode": parse_mode, "search_name": array_name}
         if found_paths:
-            arrays = []
+            # 与全量模式一致：按结构路径聚合（[0].a → [*].a），
+            # 预览时可一次取出该层级全部实例的数据
+            raw_pairs = []
             for p in found_paths:
                 arr = E.get_by_path(search_root, p)
                 if isinstance(arr, list):
-                    info = {"path": p, "count": len(arr), "fields": []}
+                    raw_pairs.append((p, len(arr)))
+            arrays = []
+            for struct_path, total_count, example_path, examples in _aggregate_by_structure(raw_pairs):
+                arr = E.get_by_path(search_root, example_path)
+                if isinstance(arr, list):
+                    info = {"path": struct_path, "count": total_count, "fields": [],
+                            "example_path": example_path, "examples": examples}
                     if arr and isinstance(arr[0], dict):
                         info["fields"] = list(arr[0].keys())
+                        info["structure"] = _summarize_structure(arr[0])
                     arrays.append(info)
             result_data["arrays"] = arrays
             result_data["total"] = len(arrays)
@@ -2358,15 +2488,19 @@ def detect_arrays_json():
         info = {"path": "[根数组]", "count": len(resp_json), "fields": []}
         if resp_json and isinstance(resp_json[0], dict):
             info["fields"] = list(resp_json[0].keys())
+            info["structure"] = _summarize_structure(resp_json[0])
         arrays = [info]
-        # 探测列表元素内部的嵌套数组：收集所有原始路径后按结构聚合
-        raw_sub = []
+        # 探测列表元素内部的嵌套数组：逐元素收集并加 [idx] 前缀，
+        # 保证示例路径对应真实索引（收集到一起再统一加前缀会让示例路径
+        # 全部变成最后一个索引的路径，出现 [2].xxx 重复展示的问题）
+        prefixed_raw = []
         for idx, elem in enumerate(resp_json):
             if not isinstance(elem, dict):
                 continue
-            _collect_arrays_raw(elem, '', 15, raw_sub)
-        # 加上 [idx]. 前缀，使路径基于根数组
-        prefixed_raw = [(f"[{idx}].{p}" if p else f"[{idx}]", c) for (p, c) in raw_sub]
+            elem_raw = []
+            _collect_arrays_raw(elem, '', 30, elem_raw)
+            for (p, c) in elem_raw:
+                prefixed_raw.append((f"[{idx}].{p}" if p else f"[{idx}]", c))
         aggregated = _aggregate_by_structure(prefixed_raw)
         for struct_path, total_count, example_path, examples in aggregated:
             sub_arr = E.get_by_path(resp_json, example_path)
@@ -2374,6 +2508,7 @@ def detect_arrays_json():
                 a_info = {"path": struct_path, "count": total_count, "fields": [], "example_path": example_path, "examples": examples}
                 if sub_arr and isinstance(sub_arr[0], dict):
                     a_info["fields"] = list(sub_arr[0].keys())
+                    a_info["structure"] = _summarize_structure(sub_arr[0])
                 arrays.append(a_info)
         result_data = {"ok": True, "arrays": arrays, "total": len(arrays), "mode": parse_mode}
         return jsonify(result_data)
@@ -2392,6 +2527,7 @@ def detect_arrays_json():
         info = {"path": struct_path, "count": total_count, "fields": [], "example_path": example_path, "examples": examples}
         if arr and isinstance(arr[0], dict):
             info["fields"] = list(arr[0].keys())
+            info["structure"] = _summarize_structure(arr[0])
         arrays.append(info)
 
     result_data = {"ok": True, "arrays": arrays, "total": len(arrays), "mode": parse_mode}
@@ -8578,7 +8714,8 @@ def schedule_tasks_list():
 def schedule_task_create():
     """创建定时任务
 
-    请求: {file, steps, loops, mode, config}
+    请求: {name, file, steps, loops, mode, config}
+      name: 任务名（可选，留空按所选接口名自动生成；列表里用它区分任务）
       mode: once | daily | random_window | interval | burst
       config 按模式取值:
         once          {run_at: '2026-10-10 15:30'}
@@ -8596,7 +8733,7 @@ def schedule_task_create():
 
 @app.route("/api/schedule/tasks/<tid>", methods=["POST"])
 def schedule_task_update(tid):
-    """更新任务（启停 / 修改文件、步骤、次数）"""
+    """更新任务（启停 / 重命名 / 修改文件、步骤、次数）"""
     body = request.get_json(silent=True) or {}
     ok, res = _scheduler.update_task(tid, body)
     if not ok:

@@ -311,6 +311,65 @@
       "extract": {
         "finalOrderNo": "args.orderNo"
       }
+    },
+    {
+      "name": "店长信息获取",
+      "request": {
+        "method": "POST",
+        "url": "http://pmslink-test.bestwehotel.net/proxy/pms-ex/sso/rest/user/searchShopManager/v1",
+        "body": {
+          "storeId": "WYN5180481",
+          "status": 1,
+          "currentPage": 1,
+          "pageSize": 100
+        },
+        "headers": {
+          "Content-Type": "application/json",
+          "X-AUTH-HEADER": "JW0XRPRCPEQNCSASCK6SLKNIYUKS0NDI",
+          "APP-ID": "100005",
+          "fizz-appid": "pms-ex-rzt",
+          "fizz-sign": "1628d359b4f64f44927e12bd50e97686"
+        },
+        "timeout": 60
+      }
+    },
+    {
+      "name": "silentLogin",
+      "request": {
+        "url": "https://wehoteltest-cloud.bestwehotel.com/gw3/app-mini/trip-mini/login/v3/silentLogin",
+        "method": "POST",
+        "headers": {
+          "X-WeHotel-Api-Key": "fdb4ad88-2f64-4d94-96d1-27e5066b800e",
+          "channelCode": "CA00155",
+          "clichannel": "CLI0011",
+          "content-type": "application/json",
+          "token": "",
+          "charset": "utf-8",
+          "Referer": "https://servicewechat.com/wxbb3e49efb6038652/0/page-frame.html",
+          "User-Agent": "Mozilla/5.0 (Linux; Android 15; LGE-AN00 Build/HONORLGE-AN00; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.189 Mobile Safari/537.36 XWEB/1500205 MMWEBSDK/20260902 MMWEBID/6156 MicroMessenger/8.0.80.3220(0x28005033) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64 MiniProgramEnv/android"
+        },
+        "body": {
+          "languageCode": 0,
+          "code": "0e18zd1w3P4m383mtI0w3iA0Ax18zd1D",
+          "sid": "10031074",
+          "sourceTypeId": "10029655",
+          "innId": "JJ1090",
+          "needCard": false,
+          "scene": 1047,
+          "groupType": 2,
+          "regSource": "11000006",
+          "TDFingerprint": "eyJ1c2VyQWdlbnQiOiIiLCJwaG9uZVR5cGUiOiJMR0UtQU4wMCIsInN5c1R5cGUiOiJBbmRyb2lkIiwidW5pb25JZCI6IiIsInN5c3RlbSI6IkFuZHJvaWQgMTUiLCJvcGVuSWQiOiIifQ==",
+          "clientInfo": {
+            "os": "LGE-AN00",
+            "systemVersion": "Android 15",
+            "TDFingerprint": "tdfpeyJvcyI6NCwidiI6InVKTVFKYXI5eFdCOWs5NVprZjJsbUc9PSIsImQiOiJ7XCJwYXJ0bmVyXCI6XCJqaW5qaWFuZ1wiLFwiYXBwX25hbWVcIjpcIndlaG90ZWxfd3hcIixcInRcIjpcImt5bnk5U1JXcFU3WHhORjhvTElPcGZsU1IvUlZ0NmVKNXJkRE1ZNUxDYWk9XCIsXCJpZFwiOlwidWwwT2JFQ2dta2E9XCIsXCJ2XCI6XCJ1Sk1RSmFyOXhXQjlrOTVaa2YybG1HPT1cIixcImFcIjpcIm52QUk2dnd4WjNxXFxcXEhUVWlHNHE3b2NPVUp2WUVuOUVJWnBzWWY5b2FLeU9ZejFCaEZCSjYzNVhIYmd6NURHRTlSNkpBdHFSOHBqZU04RktWNVFKQ3Z0SmthTUVEeDJSTE96WEl3Z2hTenZoOFN6SDFtYnNaSURKSUpsWndzb1k2XCIsXCJiXCI6XCJZZmJvZllNVEd5UUh2cTdkQk8yWVV6YVdkc1NmSkVFQ2w3VWtTQ1dCSEQxUzVxREhpWjR-ZVhOV3pRa1pnTjhmMkV3ZmNhMTJCLzVjTWZVZWtrbDJ4MXBCdWx-a3FZNkhod0hGOFBiVFkwL3Brd1JCMmQ5R0F2djVEbUZkbERPWTZKM1dMQkhmSTVMMjNyVlQ3OH5TaWo2TnlublFEZC9hekcwSVFMc2YvVmd1T05MejdadUZ4cHdYR3p1Ry9FNUhCcE0wL2NNbTJnVG1saldvajZpM0dDc3BvUXFUWjljL29ST2NsQlo1SEQ1ejhmZXZqb0FoYURPcWR5UHJNaUJ5d3JTd0xxZHFwL2h6T0c3cXpLb2l5YWZmaDZBSFg1Z3dsbmFrVTdZaVpkRUdxYkthaklBZHNpSUYxY0RIMVVVa2dtZFh-cTQ5SXh4UW9Pdjk4ZGpqbGN4VE1oRXpPTTdrNXpiWjBLSWdUTEpiNGtnaG1lV0N2OURXRkxEZlIwOFplMjM1SUFGc3ZhUXhiUEJuMTBiTUVQRTBOQzROOHFteExWL1VZSGFMNTlvRTdFazd-UlFMbFRkNmx6OUh4RVhWclJvbFJ5bnA0WjFybDBFcy9EUnVtckRhU2tjTEFtVzZlazBPZkxJc0JnalhkTH54YWhhdzYyb2djL3JrMDRPWDRJNS9Zd1EySVBkdDk3eFVneFIwbEs1Tzl0eE5QMExoMkQ4MnhJTUtuTFVFSlhnS3JKT3hTeWlLM3NvZXMwa014eWVsRS9UOS9HTnFIQWM4eVc1M2FWNWhjUWFMdTBXfkZkSklDM21-UVU3YVhsTzh3TmZ4V1pDQTlkd3NnZ0dwNGQ0L1VrOHB6SFY5OVh-SGxnfjBBdW00Wkc0OVYxN0FUT1R-Y351dmZrTExXUTQ4RGN5L1hrQzhiVHh5a1U5bGhuU2xibnhzUmRpTGkwR2Y3NXBCWE9Nd1JzUmE3czNlZlkvdk5aVC80clFXeXlvUWRFTm0xdmpXWmhXckJjYnRRRU5mMFhLaUlaMG5GS2RoaXBZNnk1Z1dwaUw0cHFPbkg4YVZEMHBibkY5L2EzflQ4VTJPYmx1YS9zUVlXM3NOcWVOd2g1aHVvVTV0RlFYZVNkcHp6dER2QmxWdDRXMVlTM09wRXhWL0k3MVJTSXdTUHNmNXhJbklMR1dudHE4U3JtaHBKNmxOTVBBUmFUMnZMQUQ5RmJ3NUpCZXZBc2hGWWtUd3ZGOXFWOEphZ2o1dEU1UEtUeTlJNzVYTlo2RUFHaXUxN3dSTFVRZUJaSVYvVnpSRlAyVmdRVlVzdk56Q2YvT252VG5iS1liQXRpdkU4TnRJWWdoZkhyZjBMRDdGZDJXTEl4UUJTcG1DbGV0ZlhBYzFCV35kbUxKdmFzVWZFN1RsNDc4ZkZYbnF1MDFzUWdLaWR0L1p5Mlh0cjVVRnpCSEdLd2wvSzdOU296YWI1RkJHZENOcC9td2NaaXRKOEc1a0RESjBpTH5oVEhqT0tVQ2lOczFNNU9XMk9QWE8yZHNMdVRJY0NqeElONlRoY3p6alg2dzhtOGpld0FNWkhTTlhkblI1RmpWYlRLaDh1TDlNeEhYcXZKZTh3OHlCem5VVzJRc08wQkNleHU2TnhkNzIzQjlGS1NZUGZaSWVjcGdGNkUxQlQ5R3prYWt1bGVxc05HR1BTdmFlaFdtMHpPMzFhYVdrQXhhVG9CUFR3blI1V251TTR6ai8zZjdkdTVleU9LalFicmRZYXZaQm1oYXU3eXJ1Z353ZEpFWWFpTGNqUXNvSno3cUM5SjdBR2R1MENNQ29WTmJEOGd6VWNPR0liU2RXTU9zSldsd2ZFRlFqNDlmbEllV010Z09vclZobHJaYVdqZUtjTjFPNHdEZFpCRlhhS1p4SXBMfm0vOU9ybktlYmhQYTVWRC93SWF6OFAvUUtyOUZSdHlBS29yQWdXVHdJfnRZWk1JckI5U35kWVNVNUg5Z1NLY1d2UWlWYTFpWVFkRHBvVWREVGZiVUNTcHJzSzVCN1dmVHJ6dUluRFo0TTZTZDg5T2JvZEpXbjBqNE5kWW1FMlRZWmFKWXNJTUNScVBDRFhpV01Zen41ell3WTA3QXhsbENLc2J4dVpIR3pwUU83TU00a2NmT0FHSDFuL1djZzdyMkRmQkt3T2FtN2NUbDdXMmRUcjlKflhveUhKWFM2YlpSOVwiLFwiY1wiOlwiUjVlc2FvaS9uSDlMWHpaOEFMOVp5ekZEWm1aaWVIZ004WDVxOXd5TVpucTVBOGlpTTM2UU5VWHdrR3M1bWlFdjdJOXR6bWRTaXZOSUwzVH41RkNYaUpFZDlSNWF1TzBRYlBTcXpPV3NCVDhLbjhSVDdLcHNyS2g5cFZ4WFlXUVc5S0dFOHV5clhZVFB5bWhFUHdxeTZsQ0J-WDlSaURqSFlCd2gvNWlCSmN6fnhTd0duflVvWEFIWE15RjVzdHVXWmRKOE9KR3B4YnRsb2JzUEV-STNzN2NtbVhlY3hoRS9cIixcImRcIjpcIk96d1ZEMFF5bGp5R0RsWmpaQXVqNn45SHd6c1NJMWpXcH4vTk9vREpTY1VhWTF6TlVYTXNsbUxSWX5hbTN4M1Vkc1B5L2NQVDVRaFB4OHZQbTN4VW9idFpQTGNLRFI3MzZ5RWM1ZWZvNjhNQXFoTG9HdXJ4NWVHUUtacFlIeW1TZTczWTZ-QXRubHJ4R0RkVGwyV1FtaUxKa0pjRVNGVEVKb0NUYTNqVDlzS1o4Vi9SV341bG04ajA5MU1jRHI4ZEhYam9TWXZWaEpCVmtRT2NYWHQzdG5paEt3L2RXWTRuQ3FFcEFGYllzdnRyejN5enhSelp-MzZhb1MyRWxqazZMTElFVnRZczVQYzN4MkREeEV0UGEwZnBkbkdjRmZTYzlDNFJISFdxS35MSG9JdzVvfndsZVJrQXYzWDB3QkpqOG96YzN4Vk5DT3QvaEtJNGFCUVRsWFcvYzRUTzJ2SlhybTI5clZBTVk5NTBFQlhLTEk0OFUyZE54ZlNMWm1jSk1FcXJjRjNjdGFyOEZjQldDNWtFcn5kTHVOdjF1b3dNMVd0TWRPN0pDSnV0Qkp4RC9SRjhJS2JMSzFRSzdNOTBNM3VPZ3RKYm1ROUdjZ0cxVk5tUjlDL1FYZEZPcDBRU1o3MVZIaDNKTlA5MWthTUJhZG9ZZmhqYWEvc1MwZ1Zmc3VJUE1FaWM0ZW50NjFOYWNjVFVPTWNobFRTdn44WkwwZ3J1amdTbjVZcG4zbGRyZWRCMGUzR3FYQlpNczZTNUU1dndPYmxEdmxtWExuM0NDdjZHb2hpd3VsdThZU05xdXQ3bXJONTNTY0VCenlYcW01TVpLODN4YXdkdmNyWXNReFZFT1pZUGt3eVRQVUNBZGtIdUtPRVJIekJIS3M2dlN4RVU5NEVnRTY5RWNlYUtqNlVRR0c9PVwiLFwiZVwiOlwicnA1YlR2b2xhTWY4d25VR3UwRXBWWW5FWFYvczMvbH5xTVF4YmZjcVVSUjN2emk1QkJrTmFIb2pDL0JnU09ua3I0ZWFocEYvSW8vR2VPaVdQRGRoR0dqbzI5ZHhEbXpJa3c1aUwwdkl2dXVEbTVNMUVqblBEcD09XCIsXCJmXCI6XCJORG1SNXVzMm1sND1cIixcImlcIjpcIllXY1VYY0N-RFZ5PVwiLFwiaWRmXCI6XCJxaHdpZ281aXVuZHd3bnVlb2VyZGh1aXp1Q29vdXd1blwiLFwiZ1wiOlwiOWY5ZmRlNTg5NzJlYTgzZDk0YTdkZjE5ZDNlMWEyMzBcIixcImhcIjpcIjg5M2NkNjJiNmM0Zjg0MmE4ZWI3NDY2M2IwNTBjZGZiXCJ9IiwiZSI6MzAyLCJhbGwiOjYzNSwicHRpbWUiOjAsInRwIjoiMCwifQ"
+          },
+          "dataSafeMode": "1",
+          "miniType": 6,
+          "channelCode": "CA00155"
+        },
+        "timeout": 60
+      }
     }
   ]
 }

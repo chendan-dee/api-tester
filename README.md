@@ -8,35 +8,46 @@
 
 ```
 项目文件夹/
-├── 工具箱.exe    ← 主程序（双击运行）
-├── 启动.bat               ← 源码启动脚本（需安装 Python）
+├── 启动.bat               ← 源码启动脚本（自动定位 .venv、自动装依赖）
+├── app.py                 ← Web 服务入口（Flask，全部 HTTP 接口）
 ├── requirements.txt       ← Python 依赖清单
 ├── icon.ico               ← 程序图标
-├── src/                   ← 源代码
-│   ├── app.py             ← Web 服务入口
-│   ├── engine.py          ← 接口测试引擎
+├── src/                   ← 业务模块（由 app.py 加入 sys.path）
+│   ├── engine.py          ← 接口测试引擎（发送/断言/提取）
+│   ├── runner.py          ← 命令行运行器
 │   ├── printer.py         ← 打印/报告模块
+│   ├── scheduler.py       ← 定时任务调度
+│   ├── seqvars.py         ← 自增变量
+│   ├── dataset.py         ← 参数化数据集
+│   ├── scripts.py         ← 前后置脚本执行
+│   ├── script_runtime.js  ← 前后置脚本 Node 运行时
 │   ├── data_generator.py  ← 数据生成器
 │   ├── yaml_checker.py    ← YAML 语法校验
 │   ├── curl2yaml.py       ← curl 转 YAML
-│   ├── runner.py          ← 命令行运行器
+│   ├── capture/           ← 抓包引擎（mitmproxy addon）
+│   ├── db/                ← 数据库工作台（连接器 + 本地库）
+│   ├── recorder_tool/     ← 屏幕录制工具条
 │   └── 工具箱.spec  ← PyInstaller 打包配置
-├── cases/                 ← 你的 YAML 接口用例文件
-├── data/                  ← 持久化配置（自动生成）
+├── tests/                 ← 回归测试（pytest）
+├── cases/                 ← 接口用例（example.json 为示例）
+├── data/                  ← 持久化配置（运行时自动生成）
 │   ├── _variables.json        ← 全局变量
 │   ├── _workbench_notes.json  ← 工作台笔记
 │   ├── _workbench_todos.json  ← 待办事项
 │   ├── _mock_proxy.json       ← Mock 代理映射
 │   ├── _remote_proxy.json     ← 远程代理配置
-│   ├── _device_names.json     ← 文件互传设备列表
-│   └── _transfer_save_dir.txt ← 文件传输保存路径
+│   ├── _capture_*.json        ← 抓包配置 / 范围 / Mock
+│   ├── _schedule_tasks.json   ← 定时任务
+│   ├── _datasets/             ← 参数化数据集
+│   ├── _schedule_params/      ← 定时任务参数化文件
+│   ├── localdb/               ← 本地 SQLite 库
+│   └── thumbs/                ← 文件互传缩略图缓存
 ├── templates/             ← HTML 页面模板（index.html 桌面端、mobile.html 手机端）
 ├── static/                ← 静态资源（仅 favicon.png 与本地化的第三方库文件，CSS/JS 均内联于 index.html）
 ├── certs/                 ← 证书（HTTPS 拦截用，含自签 CA 私钥）
-├── transfer/              ← 文件互传接收的文件（运行时自动生成）
-├── 数据生成/              ← 数据生成器导出的 Excel/数据文件（运行时自动生成）
+├── transfer/              ← 文件互传接收的文件 / 录屏（运行时自动生成）
 ├── logs/                  ← 运行日志（运行时自动生成）
-└── dist/                  ← exe 打包输出目录
+└── dist/                  ← PyInstaller 打包输出（可随时删除后重新打包）
 ```
 
 ---
@@ -65,6 +76,15 @@
 
 - **无外网 CDN 依赖**：页面所需 CSS/JS 均内联在 `templates/index.html` 或已本地化到 `static/`，断网环境可正常使用。
 - **ffmpeg（可选）**：文件互传功能收到 H.265 编码视频时，会调用系统 PATH 中的 ffmpeg 转码为 H.264 以保证浏览器可播放；未安装 ffmpeg 不影响其他功能，仅跳过转码。
+
+### 回归测试
+
+```
+cd tests
+python -m pytest -q
+```
+
+`tests/conftest.py` 已把 `src/` 加入 `sys.path`，无需额外配置环境变量。
 
 ---
 

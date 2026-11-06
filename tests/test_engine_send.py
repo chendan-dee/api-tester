@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """engine 发送层回归测试：解析对了，发出去也不能变形
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q
+运行：cd .qoder/skills/api-tester/tests ; pytest -q
 """
 import pytest
 

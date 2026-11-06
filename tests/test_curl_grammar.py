@@ -6,7 +6,7 @@ curl 的选项语义永远补不完（每版都在加），但命令行的写法
   `--` 终止符、位置参数、未知选项的取值证据。
 这里把这些写法穷举一遍——写法对了，新增选项也不会把 URL / header 吃掉。
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q test_curl_grammar.py
+运行：cd .qoder/skills/api-tester/tests ; pytest -q test_curl_grammar.py
 """
 import pytest
 

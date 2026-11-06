@@ -413,7 +413,11 @@ def _latin1_safe_headers(headers):
 
     把非 latin-1 的值按 UTF-8 字节表面化（与服务端实际收到的字节一致），
     避免 curl 里带中文头就整个请求发不出去。
+
+    返回被表面化的 header 名列表：这些名字含中文，服务端按 latin-1 读取时
+    会看到乱码字符（如 httpbin 回显），需服务端按 UTF-8 解码字节才能还原。
     """
+    surrogated = []
     for name in list(headers):
         value = headers[name]
         if not isinstance(value, str):
@@ -423,7 +427,86 @@ def _latin1_safe_headers(headers):
             value.encode("latin-1")
         except UnicodeEncodeError:
             headers[name] = value.encode("utf-8").decode("latin-1")
-    return headers
+            surrogated.append(str(name))
+    return surrogated
+
+
+def _guess_resp_encoding(content, apparent):
+    """无 charset 时确定响应编码。
+
+    带 BOM → utf-8-sig（否则 resp.json() 会因 \\ufeff 前缀抛
+    "Unexpected UTF-8 BOM"，断言/提取全部失效）；
+    UTF-8 严格解码成功 → utf-8；失败再试 GB18030（覆盖国内 GBK 服务的响应，
+    charset_normalizer 对短中文内容常误判成 big5，直接猜会乱码）；
+    都失败才退回 apparent（探测结果），最后 utf-8 兜底。
+    """
+    if content.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    try:
+        content.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        content.decode("gb18030")
+        return "gb18030"
+    except UnicodeDecodeError:
+        pass
+    return apparent or "utf-8"
+
+
+def _fix_resp_headers(resp):
+    """响应头按原始字节重解码。
+
+    requests 把响应头按 latin-1 解读；服务端按 UTF-8 / GBK 字节发送中文头时
+    直接显示会乱码（与请求侧中文 header 对称的问题），header_contains 断言
+    也匹配不到中文。
+
+    latin-1 是码点与字节的一一映射，把值再 encode("latin-1") 即可无损还原
+    服务端发的原始字节，再按 UTF-8 / GB18030 重解码。
+
+    返回 (headers, fixed)：fixed 为被修正的 header 名列表，供前端提示。
+    """
+    headers = dict(resp.headers) if resp.headers else {}
+    fixed = []
+    for name, value in list(headers.items()):
+        try:
+            raw = value.encode("latin-1")
+        except Exception:
+            continue
+        for enc in ("utf-8", "gb18030"):
+            try:
+                text = raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            if not any(ord(c) > 0x7E for c in text):
+                break  # 纯 ASCII，无需修正
+            if text == value:
+                break  # 与原 latin-1 解读一致（真 latin-1 字符，如 é）
+            headers[name] = text
+            fixed.append(name)
+            break
+    return headers, fixed
+
+
+def _is_binary_ct(ct_header):
+    """Content-Type 是否属于二进制类型（图片/音视频/文档/压缩包等）。
+
+    二进制响应按文本解码只会得到一屏替换符，界面上直接提示类型与大小，
+    不再拿 resp.text 的乱码去误导用户。octet-stream 单独算二进制，但
+    文本仍保留（可能是未声明类型的 JSON）。
+    """
+    ct = (ct_header or "").lower().split(";")[0].strip()
+    if ct.startswith(("image/", "audio/", "video/", "font/")):
+        return True
+    if ct.startswith("application/vnd."):
+        return True
+    return ct in (
+        "application/pdf", "application/zip", "application/x-zip-compressed",
+        "application/gzip", "application/x-7z-compressed",
+        "application/x-rar-compressed", "application/octet-stream",
+        "application/x-msdownload",
+    )
 
 
 def do_request(req_cfg, variables=None, mock=None):
@@ -476,7 +559,9 @@ def do_request(req_cfg, variables=None, mock=None):
         return dict(ok=True, status_code=status_code,
                     elapsed_ms=delay_ms, resp_text=resp_text,
                     resp_json=resp_json, resp_headers={},
-                    error=None, is_mock=True, seq_used=seq_used)
+                    error=None, is_mock=True, seq_used=seq_used,
+                    latin1_headers=[], resp_latin1_headers=[],
+                    binary_resp=False, resp_ct="")
 
     # ── 真实请求 ──
     req_cfg = _replace_deep(req_cfg, variables or {})
@@ -498,7 +583,9 @@ def do_request(req_cfg, variables=None, mock=None):
     kwargs = {"headers": headers, "timeout": timeout, "verify": False}
     if params:
         kwargs["params"] = params
-    if body:
+    # 注意不能用 if body：body 是空 dict/list（如想发空 JSON 对象 {}）时会被跳过，
+    # 导致对方收到一个没有 body 的请求；只有 None 和空字符串才视为没写 body
+    if body is not None and body != "":
         # 大小写不敏感查找 Content-Type
         ct = ""
         for _hk, _hv in headers.items():
@@ -506,9 +593,30 @@ def do_request(req_cfg, variables=None, mock=None):
                 ct = str(_hv).lower()
                 break
         if "form" in ct:
+            # 字符串表单报文按 UTF-8 发送，补 charset 声明：
+            # 服务端按默认 ISO-8859-1 解读时中文会乱码
+            if isinstance(body, str) and "charset" not in ct:
+                for _hk in list(headers.keys()):
+                    if str(_hk).lower() == "content-type":
+                        headers[_hk] = str(headers[_hk]) + "; charset=utf-8"
+                        break
             kwargs["data"] = body
         elif isinstance(body, (dict, list)):
-            kwargs["json"] = body
+            # 不能走 requests 的 json=：它内部是 json.dumps(ensure_ascii=True)，
+            # 中文会被压成 \uXXXX 再发出去 —— 对方按原文字符串校验（签名/用户名比对）
+            # 就会认不出来，抓包里看到的也全是转义串。这里自己序列化成 UTF-8 原文。
+            # default=str：setup 注入 datetime 等非原生类型（${ts} 整串替换返回原对象）
+            # 时直接序列化失败，会让整次执行中断，这里兜底成字符串
+            text = json.dumps(body, ensure_ascii=False, default=str)
+            if not ct:
+                headers["content-type"] = "application/json"
+                ct = "application/json"
+            if ct.startswith("application/json") and "charset" not in ct:
+                for _hk in list(headers.keys()):
+                    if str(_hk).lower() == "content-type":
+                        headers[_hk] = str(headers[_hk]) + "; charset=utf-8"
+                        break
+            kwargs["data"] = text.encode("utf-8")
         else:
             # 字符串 body 是用户 / curl 给的原始报文，必须原样发送：
             # 走 json= 会被 requests 再 json.dumps 一次，外层多一对引号导致请求失败
@@ -516,6 +624,14 @@ def do_request(req_cfg, variables=None, mock=None):
                 guess = str(body).lstrip()[:1]
                 headers["content-type"] = ("application/json" if guess in ("{", "[")
                                           else "application/x-www-form-urlencoded")
+                ct = headers["content-type"].lower()
+            # 原始表单报文按 UTF-8 字节发送，补 charset 声明：
+            # 服务端按默认 ISO-8859-1 解读时中文会乱码
+            if "form" in ct and "charset" not in ct:
+                for _hk in list(headers.keys()):
+                    if str(_hk).lower() == "content-type":
+                        headers[_hk] = str(headers[_hk]) + "; charset=utf-8"
+                        break
             kwargs["data"] = str(body).encode("utf-8")
     elif method in ("POST", "PUT", "PATCH") and body is None:
         # POST/PUT/PATCH 无 body 时传空字符串，避免部分服务器拒绝空 body 请求
@@ -523,8 +639,9 @@ def do_request(req_cfg, variables=None, mock=None):
 
     # 移除本机解不了的 accept-encoding（br / zstd），否则响应会乱码
     _strip_unsupported_encoding(headers)
-    # 含中文的 header 做 latin-1 表面化，否则 requests 直接报错
-    _latin1_safe_headers(headers)
+    # 含中文的 header 做 latin-1 表面化，否则 requests 直接报错；
+    # 返回被表面化的 header 名列表，供前端提示「回显乱码是服务端按 latin-1 读取所致」
+    latin1_headers = _latin1_safe_headers(headers)
 
     # 移除 Content-Length，让 requests 库根据实际 body 自动计算
     # 保留原始值可能导致不匹配（如 curl 转换后 body 被剥离但 Content-Length 仍为原值）
@@ -535,32 +652,107 @@ def do_request(req_cfg, variables=None, mock=None):
     try:
         resp       = requests.request(method, url, **kwargs)
         elapsed_ms = int((time.time() - t0) * 1000)
+        # 响应解码（必须在 resp.json()/resp.text 之前定好编码，否则解析出的
+        # resp_json 已是乱码）：header 没显式给 charset 时，requests 只按类型
+        # 假定（json→utf-8、text→iso-8859-1），GBK 编码的响应会直接乱码。
+        # 这里按 BOM → UTF-8 → GB18030 → 探测的顺序重新确定编码。
+        _ct_header = (resp.headers.get("Content-Type") or "").lower()
+        content = resp.content
+        if content.startswith(b"\xef\xbb\xbf"):
+            # 带 BOM 的响应按 utf-8-sig 解码，避免 resp.json() 抛
+            # "Unexpected UTF-8 BOM" 导致断言/提取全部失效
+            resp.encoding = "utf-8-sig"
+        elif "charset=" not in _ct_header:
+            resp.encoding = _guess_resp_encoding(content, resp.apparent_encoding)
+        else:
+            # 服务端声明了 charset：以声明为准，但「声明 GBK 家族、字节其实是
+            # UTF-8」是老系统常见错误。GBK 双字节序列恰好构成合法 UTF-8 的概率
+            # 极低，用 UTF-8 严格解码成功 + 含非 ASCII 字符作为切换判据
+            _decl = (resp.encoding or "").lower().replace("_", "-")
+            if _decl in ("gbk", "gb2312", "gb18030", "gb-2312"):
+                try:
+                    _probe = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    _probe = None
+                if _probe and any(ord(c) > 0x7E for c in _probe):
+                    resp.encoding = "utf-8"
         resp_json  = None
         try:
             resp_json = resp.json()
         except Exception:
             pass
-        # 提取响应头（供断言使用）
-        resp_hdrs  = dict(resp.headers) if resp.headers else {}
+        # 解析失败或文本出现替换符（服务端声明错 charset 的兜底）：按字节重猜再试
+        if resp_json is None or "\ufffd" in (resp.text or ""):
+            _alt = _guess_resp_encoding(content, resp.apparent_encoding)
+            if _alt and _alt != resp.encoding:
+                resp.encoding = _alt
+                try:
+                    resp_json = resp.json()
+                except Exception:
+                    pass
+        # 提取响应头（供断言使用）：requests 按 latin-1 解读响应头字节，
+        # 服务端按 UTF-8/GBK 发中文头时回显是乱码，这里按原始字节重解码
+        resp_hdrs, resp_latin1_headers = _fix_resp_headers(resp)
+        is_binary = _is_binary_ct(resp.headers.get("Content-Type") or "")
+        resp_text = "" if (is_binary and "octet-stream" not in _ct_header) else resp.text
         return dict(ok=True, status_code=resp.status_code,
-                    elapsed_ms=elapsed_ms, resp_text=resp.text,
+                    elapsed_ms=elapsed_ms, resp_text=resp_text,
                     resp_json=resp_json, resp_headers=resp_hdrs,
-                    error=None, is_mock=False, seq_used=seq_used)
+                    error=None, is_mock=False, seq_used=seq_used,
+                    latin1_headers=latin1_headers,
+                    resp_latin1_headers=resp_latin1_headers,
+                    binary_resp=is_binary,
+                    resp_ct=(resp.headers.get("Content-Type") or ""))
     except requests.exceptions.Timeout:
         return dict(ok=False, status_code=None,
                     elapsed_ms=int((time.time() - t0) * 1000),
                     resp_text="", resp_json=None, resp_headers={},
-                    error="请求超时", is_mock=False, seq_used=seq_used)
+                    error="请求超时", is_mock=False, seq_used=seq_used,
+                    latin1_headers=latin1_headers, resp_latin1_headers=[],
+                    binary_resp=False, resp_ct="")
     except Exception as e:
         return dict(ok=False, status_code=None,
                     elapsed_ms=int((time.time() - t0) * 1000),
                     resp_text="", resp_json=None, resp_headers={},
-                    error=str(e), is_mock=False, seq_used=seq_used)
+                    error=str(e), is_mock=False, seq_used=seq_used,
+                    latin1_headers=latin1_headers, resp_latin1_headers=[],
+                    binary_resp=False, resp_ct="")
 
 
 # ═══════════════════════════════════════════════════════════════
 # 断言
 # ═══════════════════════════════════════════════════════════════
+
+def _status_matches(status_code, expected):
+    """状态码断言匹配：支持数字 200 / 字符串 '200' / 通配 '2xx'（2 开头任意状态码）
+
+    期望值不是数字也不是通配写法时返回 False（记为断言失败），不再抛异常中断执行。
+    """
+    try:
+        return status_code == int(expected)
+    except (TypeError, ValueError):
+        pass
+    s = str(expected or "").strip().lower()
+    if len(s) == 3 and s[0].isdigit() and s[1:] == "xx":
+        return str(status_code).startswith(s[0])
+    return False
+
+
+def _scalar_text(v):
+    """断言比较用的标量规范化文本：布尔→true/false、None→null、
+    整数化浮点（42.0→'42'），其余 str()。
+
+    界面上期望值以文本填写（'true' / 'null' / '42'），而响应 JSON 解析后是
+    真实类型（True / None / 42.0），直接 str() 比较会误失败（'True'≠'true'）。
+    """
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
 
 def run_assert(assert_cfg, status_code, resp_text, resp_json,
               elapsed_ms=0, resp_headers=None):
@@ -586,10 +778,10 @@ def run_assert(assert_cfg, status_code, resp_text, resp_json,
     msgs     = []
     all_pass = True
 
-    # 状态码断言
+    # 状态码断言（支持 200 / '200' / '2xx' 通配，期望值非法时不中断执行）
     expected = assert_cfg.get("status_code")
     if expected is not None:
-        if status_code == int(expected):
+        if _status_matches(status_code, expected):
             msgs.append(P.ok(f"status={status_code}"))
         else:
             msgs.append(P.fail(f"status 期望={expected} 实际={status_code}"))
@@ -613,10 +805,10 @@ def run_assert(assert_cfg, status_code, resp_text, resp_json,
             msgs.append(P.fail(f'不含="{not_contains}" 但实际包含'))
             all_pass = False
 
-    # JSON 路径断言
+    # JSON 路径断言（布尔/null/整数化浮点按 JSON 字面量规范化后比较）
     for path, expected_val in (assert_cfg.get("json_path") or {}).items():
         actual = get_by_path(resp_json, path)
-        if str(actual) == str(expected_val):
+        if _scalar_text(actual) == _scalar_text(expected_val):
             msgs.append(P.ok(f"{path}={expected_val}"))
         else:
             msgs.append(P.fail(f"{path} 期望={expected_val} 实际={actual}"))
@@ -635,13 +827,18 @@ def run_assert(assert_cfg, status_code, resp_text, resp_json,
                 msgs.append(P.fail(f"{path} 不存在"))
                 all_pass = False
 
-    # 响应时间断言（毫秒）
+    # 响应时间断言（毫秒）；期望值非数字时记为失败，不中断后续断言
     time_limit = assert_cfg.get("response_time")
     if time_limit is not None:
-        limit_ms = int(time_limit)
-        if elapsed_ms <= limit_ms:
+        try:
+            limit_ms = float(time_limit)
+        except (TypeError, ValueError):
+            msgs.append(P.fail(f"耗时上限无效（{time_limit}），无法比较"))
+            all_pass = False
+            limit_ms = None
+        if limit_ms is not None and elapsed_ms <= limit_ms:
             msgs.append(P.ok(f"耗时 {elapsed_ms}ms ≤ {limit_ms}ms"))
-        else:
+        elif limit_ms is not None:
             msgs.append(P.fail(f"耗时 {elapsed_ms}ms > {limit_ms}ms"))
             all_pass = False
 

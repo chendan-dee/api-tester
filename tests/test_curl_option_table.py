@@ -8,7 +8,7 @@
      必须已登记进选项表：有报言语义的必须映射出来，下发 / 连接类的必须进 ignore 表。
      新增选项忘了登记，本文件立刻红。
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q test_curl_option_table.py
+运行：cd .qoder/skills/api-tester/tests ; pytest -q test_curl_option_table.py
 """
 import base64
 

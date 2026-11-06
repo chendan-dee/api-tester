@@ -8,7 +8,7 @@ Chrome cmd 的 ^" 风格、PowerShell 反引号风格；单行 / 多行续行；
 
 任何一项比对不通过，就说明真机上会丢参数。
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q test_curl_fidelity.py
+运行：cd .qoder/skills/api-tester/tests ; pytest -q test_curl_fidelity.py
 """
 import json
 import random

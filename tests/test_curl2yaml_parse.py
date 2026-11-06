@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """curl → yaml 解析回归测试
 
-运行：cd .qoder/skills/api-tester/_tests ; pytest -q
+运行：cd .qoder/skills/api-tester/tests ; pytest -q
 这里每一条用例，都对应过一次（或差点发生）的“静默漏参数”。
 以后改 curl2yaml.py，先跑这个目录，全绿才算完。
 """
