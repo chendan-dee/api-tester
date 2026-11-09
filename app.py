@@ -3635,6 +3635,132 @@ def db_batch_preview():
 
 
 # ═══════════════════════════════════════════════════
+#  API: SQL 文件（通用 SQL 查询，多文件保存在 data/sql/*.sql）
+# ═══════════════════════════════════════════════════
+
+SQL_FILES_DIR = os.path.join(DATA_DIR, "sql")
+SQL_FILES_META = os.path.join(SQL_FILES_DIR, "_meta.json")
+
+
+def _sql_files_dir():
+    os.makedirs(SQL_FILES_DIR, exist_ok=True)
+    return SQL_FILES_DIR
+
+
+def _sql_clean_name(name):
+    """文件名清洗：去掉路径分隔符与系统非法字符，避免跳出 sql 目录"""
+    s = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", str(name or "")).strip().strip(".")
+    return s[:80]
+
+
+def _sql_meta_load():
+    try:
+        with open(SQL_FILES_META, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _sql_meta_save(meta):
+    try:
+        with open(SQL_FILES_META, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+@app.route("/api/sql/files", methods=["GET"])
+def sql_files_list():
+    d = _sql_files_dir()
+    meta = _sql_meta_load()
+    files = []
+    for fn in os.listdir(d):
+        if not fn.lower().endswith(".sql"):
+            continue
+        name = fn[:-4]
+        try:
+            st = os.stat(os.path.join(d, fn))
+        except OSError:
+            continue
+        m = meta.get(name) or {}
+        files.append({
+            "name": name,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "updated": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "source_id": m.get("source_id") or "",
+            "schema": m.get("schema") or "",
+        })
+    # 最近改过的排前面，常用文件不用往下翻
+    files.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
+    return jsonify({"ok": True, "files": files})
+
+
+@app.route("/api/sql/file", methods=["GET"])
+def sql_file_get():
+    name = _sql_clean_name(request.args.get("name"))
+    p = os.path.join(_sql_files_dir(), name + ".sql")
+    if not name or not os.path.isfile(p):
+        return jsonify({"ok": False, "error": "SQL 文件不存在"})
+    try:
+        with open(p, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+    except Exception as e:
+        return jsonify({"ok": False, "error": "读取失败：%s" % e})
+    m = _sql_meta_load().get(name) or {}
+    return jsonify({"ok": True, "name": name, "sql": content,
+                    "source_id": m.get("source_id") or "", "schema": m.get("schema") or ""})
+
+
+@app.route("/api/sql/save", methods=["POST"])
+def sql_file_save():
+    data = request.get_json(silent=True) or {}
+    name = _sql_clean_name(data.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "请填写 SQL 文件名"})
+    old = _sql_clean_name(data.get("old_name"))
+    sql = str(data.get("sql") or "")
+    d = _sql_files_dir()
+    try:
+        with open(os.path.join(d, name + ".sql"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(sql)
+    except Exception as e:
+        return jsonify({"ok": False, "error": "保存失败：%s" % e})
+    meta = _sql_meta_load()
+    # old_name 与 name 不同 = 重命名：旧文件与旧元信息一并清掉
+    if old and old != name:
+        try:
+            os.remove(os.path.join(d, old + ".sql"))
+        except OSError:
+            pass
+        meta.pop(old, None)
+    meta[name] = {
+        "source_id": str(data.get("source_id") or ""),
+        "schema": str(data.get("schema") or ""),
+        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _sql_meta_save(meta)
+    return jsonify({"ok": True, "name": name})
+
+
+@app.route("/api/sql/delete", methods=["POST"])
+def sql_file_delete():
+    data = request.get_json(silent=True) or {}
+    name = _sql_clean_name(data.get("name"))
+    p = os.path.join(_sql_files_dir(), name + ".sql")
+    if not name or not os.path.isfile(p):
+        return jsonify({"ok": False, "error": "SQL 文件不存在"})
+    try:
+        os.remove(p)
+    except Exception as e:
+        return jsonify({"ok": False, "error": "删除失败：%s" % e})
+    meta = _sql_meta_load()
+    meta.pop(name, None)
+    _sql_meta_save(meta)
+    return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════
 #  API: 批量参数化 — 执行（SSE 流式）
 # ═══════════════════════════════════════════════════
 
@@ -4561,6 +4687,10 @@ def set_seq_variable_step():
 
 TODOS_FILE = os.path.join(DATA_DIR, "_workbench_todos.json")
 NOTES_FILE = os.path.join(DATA_DIR, "_workbench_notes.json")
+# 计划分类集合单独存：todos 是数组结构（旧数据），不能塞对象进去，
+# 因此分类表另存一个文件，端点也只管分类的增删改
+TODO_CATS_FILE = os.path.join(DATA_DIR, "_workbench_todo_cats.json")
+DEFAULT_TODO_CATS = ["测试", "开发", "日常", "学习", "会议"]
 
 
 def _load_todos():
@@ -4580,6 +4710,35 @@ def _save_todos(todos):
     with _file_lock(TODOS_FILE):
         with open(TODOS_FILE, "w", encoding="utf-8") as f:
             json.dump(todos, f, ensure_ascii=False, indent=2)
+
+
+def _load_todo_cats():
+    """加载计划分类集合（文件缺失时返回内置默认值，不写盘）"""
+    if os.path.exists(TODO_CATS_FILE):
+        with _file_lock(TODO_CATS_FILE):
+            try:
+                with open(TODO_CATS_FILE, "r", encoding="utf-8") as f:
+                    cats = json.load(f)
+                if isinstance(cats, list):
+                    return [str(c) for c in cats if str(c).strip()]
+            except (json.JSONDecodeError, IOError):
+                pass
+    return list(DEFAULT_TODO_CATS)
+
+
+def _save_todo_cats(cats):
+    """保存分类集合（去空、去重、保持前端传入的顺序）"""
+    clean, seen = [], set()
+    for c in cats or []:
+        name = str(c).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean.append(name)
+    with _file_lock(TODO_CATS_FILE):
+        with open(TODO_CATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2)
+    return clean
 
 
 def _load_notes():
@@ -4613,6 +4772,19 @@ def save_todos():
     todos = (request.get_json(silent=True) or {}).get("todos", [])
     _save_todos(todos)
     return jsonify({"ok": True})
+
+
+@app.route("/api/workbench/todo-cats", methods=["GET"])
+def get_todo_cats():
+    """获取计划分类集合"""
+    return jsonify({"ok": True, "categories": _load_todo_cats()})
+
+
+@app.route("/api/workbench/todo-cats", methods=["POST"])
+def save_todo_cats():
+    """保存分类集合（整体覆盖写；改名/删除对计划的影响由前端一并处理）"""
+    cats = (request.get_json(silent=True) or {}).get("categories", [])
+    return jsonify({"ok": True, "categories": _save_todo_cats(cats)})
 
 
 @app.route("/api/workbench/notes", methods=["GET"])

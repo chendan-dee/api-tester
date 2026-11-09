@@ -1,0 +1,112 @@
+{
+  "name": "数组驱动（foreach）示例",
+  "groups": [
+    "数组驱动示例"
+  ],
+  "steps": [
+    {
+      "name": "① 取列表（数组提取，给下面逐条跑供数据）",
+      "group": "数组驱动示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/json",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200
+      },
+      "extract_list": {
+        "slides": "slideshow.slides",
+        "slideTitles": "slideshow.slides[*].title",
+        "slideTypes": "slideshow.slides[*].type"
+      }
+    },
+    {
+      "name": "② 逐条跑：对象数组 → ${slide.title}",
+      "group": "数组驱动示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?title=${slide.title}&type=${slide.type}",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "args.title",
+          "args.type"
+        ]
+      },
+      "foreach": {
+        "from": "slides",
+        "item": "slide"
+      }
+    },
+    {
+      "name": "③ 逐条跑：单值数组 → ${slideTitle}",
+      "group": "数组驱动示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?kw=${slideTitle}",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "args.kw"
+        ]
+      },
+      "foreach": {
+        "from": "slideTitles",
+        "item": "slideTitle"
+      }
+    },
+    {
+      "name": "④ 逐条跑：多个数组按位置配对（第 i 轮各取第 i 条）",
+      "group": "数组驱动示例",
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get?title=${t}&type=${ty}",
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "args.title",
+          "args.type"
+        ]
+      },
+      "foreach": {
+        "from": "slideTitles, slideTypes",
+        "item": "t, ty"
+      }
+    },
+    {
+      "name": "⑤ 逐条跑 + 请求体引用（POST 每轮写一条，这里 limit 1 只为演示）",
+      "group": "数组驱动示例",
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "title": "${slide.title}",
+          "type": "${slide.type}"
+        },
+        "timeout": 30
+      },
+      "assert": {
+        "status_code": 200,
+        "json_path_exists": [
+          "json.title",
+          "json.type"
+        ]
+      },
+      "foreach": {
+        "from": "slides",
+        "item": "slide",
+        "limit": 1
+      }
+    }
+  ]
+}

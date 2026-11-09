@@ -181,11 +181,37 @@ def _jsonable(v):
         return None  # 保留 NULL，前端才能和数据里的空字符串区分开
     if isinstance(v, (int, float, str)):
         return v
-    if isinstance(v, bytes):
-        return v.hex()
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        # 二进制列（BINARY / VARBINARY / BLOB 等）：能当可读文本就还原成文本，
+        # 否则标成 0x.. 十六进制——直接 .hex() 会把 b"\x01" 变成 "01"，看起来像个数字
+        b = bytes(v)
+        try:
+            s = b.decode("utf-8")
+        except UnicodeDecodeError:
+            s = ""
+        if s and all(ch.isprintable() or ch in "\r\n\t" for ch in s):
+            return s
+        return "0x" + b.hex().upper()
     if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
         return str(v)
     return str(v)
+
+
+# MySQL 的 BIT(1) 列 pymysql 返回 b"\x00"/b"\x01"：按整数展示才对得上 WHERE Flag=1
+_FIELD_TYPE_BIT = 16
+
+
+def _jsonable_row(row, desc=None):
+    """按列类型转一行：BIT 当整数，其余交给 _jsonable"""
+    if not desc or len(desc) != len(row):
+        return [_jsonable(v) for v in row]
+    out = []
+    for v, d in zip(row, desc):
+        if isinstance(v, (bytes, bytearray, memoryview)) and len(d) > 1 and d[1] == _FIELD_TYPE_BIT:
+            out.append(int.from_bytes(bytes(v), "big"))
+        else:
+            out.append(_jsonable(v))
+    return out
 
 
 def _safe_ident(name):
@@ -2156,13 +2182,14 @@ class MySQLConnector:
                 cur.execute("SELECT * FROM `%s`.`%s`%s%s LIMIT %d OFFSET %d" %
                             (sc, tb, tail, ob, int(limit), int(offset)))
                 cols = [d[0] for d in cur.description]
+                desc = list(cur.description)  # 游标关闭后 description 不可靠，先拷一份
                 rows = cur.fetchall()
             keys = []
             if pk_cols:
                 idx = {c: cols.index(c) for c in pk_cols if c in cols}
                 keys = [{c: _jsonable(r[idx[c]]) for c in pk_cols if c in idx} for r in rows]
             return {"columns": cols,
-                    "rows": [[_jsonable(v) for v in r] for r in rows],
+                    "rows": [_jsonable_row(r, desc) for r in rows],
                     "keys": keys if keys else None,
                     "editable": bool(pk_cols),
                     "readonly_cols": gen_cols,
@@ -2612,7 +2639,7 @@ class MySQLConnector:
                         "index": idx,
                         "sql": raw.strip(),
                         "columns": cols,
-                        "rows": [[_jsonable(v) for v in r] for r in rows],
+                        "rows": [_jsonable_row(r, cur.description) for r in rows],
                         "count": len(rows),
                         "truncated": truncated,
                     })

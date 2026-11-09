@@ -24,6 +24,7 @@ data/capture_bodies/
 data/_datasets/
 data/_schedule_runs/
 data/_schedule_params/
+data/sql/
 data/*.db
 data/*.sqlite
 
