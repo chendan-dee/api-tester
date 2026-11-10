@@ -150,6 +150,16 @@ def _var_to_text(v):
 
 
 _VAR_REF_RE = re.compile(r'\$\{([^{}]+)\}')   # 变量引用：${名称} / ${名称.字段} / ${名称.items[0].深层}
+# 被 URL 编码过的变量引用：%24%7BorderNo%7D。前端序列化已保证保留 ${}，但历史的用例库
+# 和从别处粘来的链接会把占位符整段编码，运行时必须认回来，否则 URL 参数永远替换不到
+_VAR_REF_ENC_RE = re.compile(r'%24%7B([^{}%]+)%7D', re.I)
+
+
+def _decode_ref_urlenc(text):
+    """把 URL 里被编码过的占位符还原成 ${名称}（%24%7B → ${、%7D → }）；无编码串时原样返回"""
+    if not isinstance(text, str) or '%24%7b' not in text.lower():
+        return text
+    return _VAR_REF_ENC_RE.sub(lambda m: '${' + m.group(1) + '}', text)
 
 
 def _lookup_var(name, variables):
@@ -184,17 +194,22 @@ def _replace(text, variables):
     """
     if not isinstance(text, str):
         return text
-    if not variables or '${' not in text:
+    if not variables:
+        return text
+    src = _decode_ref_urlenc(text)   # 编码过的 ${} 先还原，再按正常引用处理
+    if '${' not in src:
         return text
     # 整个字符串恰好是单个变量引用 → 直接返回原始类型值（数字/布尔/JSON对象等）
-    m = _VAR_REF_RE.fullmatch(text)
+    m = _VAR_REF_RE.fullmatch(src)
     if m:
         found, val = _lookup_var(m.group(1), variables)
         return val if found else text
     def _sub(mm):
         found, val = _lookup_var(mm.group(1), variables)
         return _var_to_text(val) if found else mm.group(0)
-    return _VAR_REF_RE.sub(_sub, text)
+    out = _VAR_REF_RE.sub(_sub, src)
+    # 只是把编码还原、一个变量都没命中：保留原始写法，别把字面量悄悄改掉
+    return text if (src is not text and out == src) else out
 
 
 def _replace_deep(obj, variables):
@@ -224,6 +239,7 @@ def _referenced_var_names(obj):
             text = json.dumps(obj, ensure_ascii=False)
         except (TypeError, ValueError):
             text = str(obj)
+    text = _decode_ref_urlenc(text)   # 编码过的引用也算引用（自增变量取号不能漏）
     names = set()
     for m in _VAR_REF_RE.finditer(text):
         head = re.split(r"[.\[]", m.group(1).strip(), 1)[0].strip()
@@ -865,7 +881,12 @@ def run_assert(assert_cfg, status_code, resp_text, resp_json,
 # 变量提取
 # ═══════════════════════════════════════════════════════════════
 
-def do_extract(extract, extract_list, resp_json, variables):
+# 数组变量回传前端的上限：超过只给前 N 项，避免一条记录把 SSE 撑胖
+# （与下面 foreach 的 FOREACH_MAX_ITEMS 取同一量级）
+EXTRACT_DETAIL_MAX = 200
+
+
+def do_extract(extract, extract_list, resp_json, variables, detail=None):
     """从响应 JSON 中提取变量，写入 variables 字典
 
     参数：
@@ -875,6 +896,8 @@ def do_extract(extract, extract_list, resp_json, variables):
                       例：{"allIds": "data.ids"} → 取整个数组存为变量 allIds
       resp_json     — 响应解析后的 JSON 对象
       variables     — 已提取变量字典，新值追加写入
+      detail        — 可选 dict；传入时把数组变量的取值写进去
+                      （前端「提取变量」用它做前几项预览和全量查看）
 
     返回：提取信息列表，如 ["${postId}=42", "${allIds}=[5项]"]
     """
@@ -896,6 +919,11 @@ def do_extract(extract, extract_list, resp_json, variables):
         if isinstance(val, list):
             variables[var_name] = val
             info_parts.append(f"${{{var_name}}}=[{len(val)}项]")
+            if detail is not None:
+                # 摘要只有项数看不出内容：额外回传前 N 项，前端据此预览与展开全量
+                detail[var_name] = {"type": "list", "count": len(val),
+                                    "items": val[:EXTRACT_DETAIL_MAX],
+                                    "truncated": len(val) > EXTRACT_DETAIL_MAX}
             P.print_extract(var_name, val, is_list=True)
         else:
             P.print_extract_fail(var_name, path)
@@ -1046,7 +1074,7 @@ def find_unresolved_refs(obj):
             for v in x:
                 _walk(v)
         elif isinstance(x, str):
-            for m in _VAR_REF_RE.finditer(x):
+            for m in _VAR_REF_RE.finditer(_decode_ref_urlenc(x)):
                 name = m.group(1)
                 if name not in found:
                     found.append(name)

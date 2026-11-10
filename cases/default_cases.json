@@ -24,26 +24,6 @@
       }
     },
     {
-      "assert": {
-        "status_code": 401
-      },
-      "group": "",
-      "name": "接口测试",
-      "request": {
-        "body": {
-          "giftId": "9931273",
-          "token": "LONGa37cc06cdde14efaa6303c9ec06b93c4"
-        },
-        "headers": {
-          "Content-Type": "application/json",
-          "cookie": "gdp_user_id=gioenc-4a6g4a39%2C1d73%2C54cb%2Cc1ba%2C0b583g6b8e5d; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A9%2C%22VISIT%22%3A3%2C%22PAGE%22%3A4%2C%22VIEW_CLICK%22%3A4%7D; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458109276%22%2C%22first_id%22%3A%2219f593dab47adb-0a73e28086d9058-26061f51-2073600-19f593dab48209c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%2C%22%24latest_utm_campaign%22%3A%22LBL13220860374%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTlmNTkzZGFiNDdhZGItMGE3M2UyODA4NmQ5MDU4LTI2MDYxZjUxLTIwNzM2MDAtMTlmNTkzZGFiNDgyMDljIiwiJGlkZW50aXR5X2xvZ2luX2lkIjoiMTQ1ODEwOTI3NiJ9%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458109276%22%7D%7D; SSO-AUTH-HEADER=LONGa37cc06cdde14efaa6303c9ec06b93c4; token=LONGa37cc06cdde14efaa6303c9ec06b93c4"
-        },
-        "method": "POST",
-        "timeout": 60,
-        "url": "https://mkttest.bestwehotel.net/proxy/wehotel-member-gift/wehotel-member-gift/giftSellRecord/cancelActivityGift"
-      }
-    },
-    {
       "name": "未命名接口",
       "request": {
         "method": "GET",
@@ -120,10 +100,13 @@
     },
     {
       "name": "示例5 逐条入参（对象数组→${item.字段}）",
-      "group": "提取示例",
       "request": {
         "method": "GET",
         "url": "https://httpbin.org/get?title=${slide.title}&type=${slide.type}",
+        "headers": {
+          "slideTitle": "${slideTitle}",
+          "slide": "${slide.title}"
+        },
         "timeout": 30
       },
       "assert": {
@@ -134,16 +117,16 @@
         ]
       },
       "foreach": {
-        "from": "slides",
-        "item": "slide"
-      }
+        "from": "slides,slideTitles",
+        "item": "slide,slideTitle"
+      },
+      "group": "提取示例"
     },
     {
       "name": "示例4 逐条入参（数组→每轮一个值）",
-      "group": "提取示例",
       "request": {
         "method": "GET",
-        "url": "https://httpbin.org/get?slide=${slideTitle}",
+        "url": "https://httpbin.org/get?slide=${slideTitle}&gift=${gift}&userName=${userName}",
         "headers": {
           "X-Slide-No": "${slideTitle}"
         },
@@ -158,55 +141,8 @@
       "foreach": {
         "from": "slideTitles",
         "item": "slideTitle"
-      }
-    },
-    {
-      "name": "接口测试",
-      "request": {
-        "url": "https://mkttest.bestwehotel.net/proxy/mkt-admin/giftInfo/sendRuleConfig",
-        "method": "GET",
-        "headers": {
-          "accept": "application/json, text/plain, */*",
-          "accept-language": "zh-CN,zh;q=0.9",
-          "cookie": "gdp_user_id=gioenc-bgb76db1%2Ccb63%2C52c2%2Ca4da%2C08c74a2e68g1; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A8%2C%22VISIT%22%3A2%2C%22PAGE%22%3A2%2C%22VIEW_CHANGE%22%3A3%2C%22VIEW_CLICK%22%3A4%7D; maliangtoken=oyFg7dkKFn66b9hxe1dm16Z/Rv7SiKy/R799s0r5C9nkzq9UOdFjNoXmutwIms+4E9pFgbo82VyXtxCMECjCATcOdOvTKWZ+72ecytahgLezoGhn6ZUIcbWpiY0flIVv; maliangtoken.sig=a6cjVgIMvbc5JkoodC8LC6O3eaEHtIJ88Nej4hQJk24; EGG_SESS=KB8sEGHjYq4LwZcOaSf3ZguDiFfSUnM-qcmtIlAWaSunwttFJX_gZvqeXaQPhXXrASo4_fUHl_7gjKyoSr-WFCimdyHaFek9U_jssSXD403jbfgzblPFPE1lQQhF09c7affFvPUqygI0mYIUm5NNMgnBMI2BqFDHCFjou7tZAhMbkXZj9B7HK8LcCrGjFxEbvr_zwuMb8reXXzB6eAQQtr23sO8DyLuShXgaV0hJ1w6Df3HGhXSh2j9awt6lRjAVl8uG9ptfJ_gjj0ohndgI2FNwr7JjRRkPGZWS59eg0pvGurSWUh3QU96wQf3gIGnoTXKun07RTc0AuiNzkElICwy6QkEUB0YHCTsmHkEET0g=; sourceType=112; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458197746%22%2C%22first_id%22%3A%221a089f9aefd108-07424cd5ca338d-26071b51-2073600-1a089f9aefe77c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMWEwODlmOWFlZmQxMDgtMDc0MjRjZDVjYTMzOGQtMjYwNzFiNTEtMjA3MzYwMC0xYTA4OWY5YWVmZTc3YyIsIiRpZGVudGl0eV9sb2dpbl9pZCI6IjE0NTgxOTc3NDYifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458197746%22%7D%7D; SSO-AUTH-HEADER=LONGad912d20ba1340f199a93c96314c1f5b; token=LONGad912d20ba1340f199a93c96314c1f5b",
-          "fizz-appid": "dbebcdcd-dcd5-40be-ba62-131413148888",
-          "priority": "u=1, i",
-          "referer": "https://mkttest.bestwehotel.net/h/admin/giftBag",
-          "sec-ch-ua": "\"Google Chrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
-          "sec-ch-ua-mobile": "?0",
-          "sec-ch-ua-platform": "\"Windows\"",
-          "sec-fetch-dest": "empty",
-          "sec-fetch-mode": "cors",
-          "sec-fetch-site": "same-origin",
-          "token": "LONGad912d20ba1340f199a93c96314c1f5b",
-          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
-        },
-        "timeout": 60
-      }
-    },
-    {
-      "name": "接口测试",
-      "request": {
-        "url": "https://mkttest.bestwehotel.net/proxy/mkt-admin/giftInfo/userLevel",
-        "method": "GET",
-        "headers": {
-          "Accept": "application/json, text/plain, */*",
-          "Accept-Language": "zh-CN,zh;q=0.9",
-          "Connection": "keep-alive",
-          "cookie": "gdp_user_id=gioenc-bgb76db1%2Ccb63%2C52c2%2Ca4da%2C08c74a2e68g1; acfef151d514c6f5_gdp_sequence_ids=%7B%22globalKey%22%3A8%2C%22VISIT%22%3A2%2C%22PAGE%22%3A2%2C%22VIEW_CHANGE%22%3A3%2C%22VIEW_CLICK%22%3A4%7D; maliangtoken=oyFg7dkKFn66b9hxe1dm16Z/Rv7SiKy/R799s0r5C9nkzq9UOdFjNoXmutwIms+4E9pFgbo82VyXtxCMECjCATcOdOvTKWZ+72ecytahgLezoGhn6ZUIcbWpiY0flIVv; maliangtoken.sig=a6cjVgIMvbc5JkoodC8LC6O3eaEHtIJ88Nej4hQJk24; EGG_SESS=KB8sEGHjYq4LwZcOaSf3ZguDiFfSUnM-qcmtIlAWaSunwttFJX_gZvqeXaQPhXXrASo4_fUHl_7gjKyoSr-WFCimdyHaFek9U_jssSXD403jbfgzblPFPE1lQQhF09c7affFvPUqygI0mYIUm5NNMgnBMI2BqFDHCFjou7tZAhMbkXZj9B7HK8LcCrGjFxEbvr_zwuMb8reXXzB6eAQQtr23sO8DyLuShXgaV0hJ1w6Df3HGhXSh2j9awt6lRjAVl8uG9ptfJ_gjj0ohndgI2FNwr7JjRRkPGZWS59eg0pvGurSWUh3QU96wQf3gIGnoTXKun07RTc0AuiNzkElICwy6QkEUB0YHCTsmHkEET0g=; sourceType=112; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%221458197746%22%2C%22first_id%22%3A%221a089f9aefd108-07424cd5ca338d-26071b51-2073600-1a089f9aefe77c%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMWEwODlmOWFlZmQxMDgtMDc0MjRjZDVjYTMzOGQtMjYwNzFiNTEtMjA3MzYwMC0xYTA4OWY5YWVmZTc3YyIsIiRpZGVudGl0eV9sb2dpbl9pZCI6IjE0NTgxOTc3NDYifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%221458197746%22%7D%7D; SSO-AUTH-HEADER=LONGad912d20ba1340f199a93c96314c1f5b; token=LONGad912d20ba1340f199a93c96314c1f5b",
-          "Referer": "https://mkttest.bestwehotel.net/h/admin/giftBag/grant/giftBagActDetail?id=1475&pageType=detail&selectType=activityType&active=3",
-          "Sec-Fetch-Dest": "empty",
-          "Sec-Fetch-Mode": "cors",
-          "Sec-Fetch-Site": "same-origin",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
-          "fizz-appid": "dbebcdcd-dcd5-40be-ba62-131413148888",
-          "sec-ch-ua": "\"Google Chrome\";v=\"153\", \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"153\"",
-          "sec-ch-ua-mobile": "?0",
-          "sec-ch-ua-platform": "\"Windows\"",
-          "token": "LONGad912d20ba1340f199a93c96314c1f5b"
-        },
-        "timeout": 60
-      }
+      },
+      "group": "提取示例"
     },
     {
       "name": "示例1 前置改写请求 + 后置断言",

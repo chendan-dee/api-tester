@@ -374,6 +374,50 @@ CA_CERT_DIR = os.path.join(_app_root, "certs")
 CA_CERT_FILE = os.path.join(CA_CERT_DIR, "api-tester-ca.crt")
 CA_KEY_FILE = os.path.join(CA_CERT_DIR, "api-tester-ca-key.pem")
 
+def _harden_private_path(path):
+    """收紧私钥相关路径的 NTFS 权限：去掉继承，只留当前用户 / SYSTEM / Administrators。
+
+    自签 CA 私钥是明文 PEM，默认继承程序目录的权限，同机任何账户拖走一份
+    就能伪造任意网站的 HTTPS。这里只解决「本机最小暴露」：整个 certs 目录被
+    拷到别的机器或网盘，仍需要靠不分享来保证。失败只记日志，不影响证书使用。
+    """
+    if not os.path.exists(path):
+        return
+    if os.name != 'nt':
+        try:
+            os.chmod(path, 0o700 if os.path.isdir(path) else 0o600)
+        except Exception as e:
+            print(f"[CA] 收紧权限失败（{path}）：{e}")
+        return
+    user = os.environ.get('USERNAME') or ''
+    tail = ':(OI)(CI)F' if os.path.isdir(path) else ':F'
+    # SYSTEM / Administrators 用 SID 写，中文系统的账户名本地化不影响匹配
+    principals = ([user] if user else []) + ['*S-1-5-18', '*S-1-5-32-544']
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    # 先逐条授权，成功后再断继承：万一授权失败，至少不会把自己锁在目录外
+    for p in principals:
+        try:
+            subprocess.run(['icacls', path, '/grant:r', p + tail],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=flags, timeout=10)
+        except Exception:
+            pass
+    try:
+        subprocess.run(['icacls', path, '/inheritance:r'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=flags, timeout=10)
+    except Exception:
+        pass
+
+def _harden_certs_dir():
+    """certs/ 整体加固：目录本身 + 证书 + 私钥 + mitm 注入副本目录（不存在则跳过）"""
+    try:
+        _harden_private_path(CA_CERT_DIR)
+        for p in (CA_CERT_FILE, CA_KEY_FILE, os.path.join(CA_CERT_DIR, 'mitm')):
+            _harden_private_path(p)
+    except Exception as e:
+        print(f"[CA] 收紧 certs 目录权限失败（不影响使用）：{e}")
+
 def ensure_ca_cert():
     """确保 CA 证书存在，不存在则生成"""
     os.makedirs(CA_CERT_DIR, exist_ok=True)
@@ -435,6 +479,7 @@ def ensure_ca_cert():
                 ))
             
             print(f"[CA] CA 证书已生成：{CA_CERT_FILE}")
+            _harden_certs_dir()
             return True
         except ImportError:
             print("[CA] cryptography 库未安装，请运行: pip install cryptography")
@@ -442,6 +487,8 @@ def ensure_ca_cert():
         except Exception as e:
             print(f"[CA] 生成 CA 证书失败：{e}")
             return False
+    # 已存在：顺手再收紧一次（幂等）。从别的机器整目录拷过来的旧文件也在这里被修成当前用户可读
+    _harden_certs_dir()
     return True
 
 # 域名证书内存缓存：{domain: (cert_pem_bytes, key_pem_bytes)}，不写磁盘
@@ -1226,10 +1273,11 @@ def api_send():
                                 elapsed_ms=result["elapsed_ms"],
                                 resp_headers=result.get("resp_headers"))
     extracted = []
+    extract_detail = {}
     if result["resp_json"] is not None:
         try:
             extracted = E.do_extract(extract, extract_list,
-                                     result["resp_json"], variables)
+                                     result["resp_json"], variables, extract_detail)
         except Exception as e:
             extracted = [f"提取异常: {e}"]
 
@@ -1254,6 +1302,7 @@ def api_send():
         "asserts": msgs,
         "assert_passed": passed,
         "extracted": extracted,
+        "extract_detail": extract_detail,
         "script": {"pre": pre_info, "post": post_info},
     })
 
@@ -1393,10 +1442,11 @@ def run_test():
                         resp_preview = result["resp_text"] or ""
 
                     extracted = []
+                    extract_detail = {}
                     if result["resp_json"] is not None:
                         extracted = E.do_extract(
                             extract, extract_list,
-                            result["resp_json"], variables)
+                            result["resp_json"], variables, extract_detail)
 
                     record = {
                         "step_index": idx, "name": step_name,
@@ -1408,6 +1458,7 @@ def run_test():
                         "asserts": [re.sub(r'\x1b\[[0-9;]*m', '', m) for m in msgs],
                         "response": resp_preview,
                         "extracted": extracted,
+                        "extract_detail": extract_detail,
                         "is_mock": result.get("is_mock", False),
                         "seq_used": result.get("seq_used") or {},
                         "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
@@ -1520,10 +1571,11 @@ def run_test_stream():
                     resp_preview = result["resp_text"] or ""
 
                 extracted = []
+                extract_detail = {}
                 if result["resp_json"] is not None:
                     extracted = E.do_extract(
                         extract, extract_list,
-                        result["resp_json"], variables)
+                        result["resp_json"], variables, extract_detail)
 
                 record = {
                     "step_index": 1, "name": cfg.get("name", "接口测试"),
@@ -1535,6 +1587,7 @@ def run_test_stream():
                     "asserts": [re.sub(r'\x1b\[[0-9;]*m', '', m) for m in msgs],
                     "response": resp_preview,
                     "extracted": extracted,
+                    "extract_detail": extract_detail,
                     "is_mock": result.get("is_mock", False),
                     "seq_used": result.get("seq_used") or {},
                     "latin1_headers": result.get("latin1_headers") or [],
@@ -1722,10 +1775,11 @@ def run_test_stream():
                                 resp_preview = result["resp_text"] or ""
 
                             extracted = []
+                            extract_detail = {}
                             if result["resp_json"] is not None:
                                 extracted = E.do_extract(
                                     extract, extract_list,
-                                    result["resp_json"], variables)
+                                    result["resp_json"], variables, extract_detail)
                                 # 记录提取的变量名，供后续步骤区分来源
                                 for var_name in list(extract.keys()) + list(extract_list.keys()):
                                     if var_name in variables:
@@ -1745,6 +1799,7 @@ def run_test_stream():
                                 "asserts": [re.sub(r'\x1b\[[0-9;]*m', '', m) for m in msgs],
                                 "response": resp_preview,
                                 "extracted": extracted,
+                                "extract_detail": extract_detail,
                                 "is_mock": result.get("is_mock", False),
                                 "seq_used": result.get("seq_used") or {},
                                 "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
@@ -4148,10 +4203,11 @@ def batch_run_chain_stream():
                                     resp_preview = result["resp_text"] or ""
 
                                 extracted = []
+                                extract_detail = {}
                                 if result["resp_json"] is not None:
                                     extracted = E.do_extract(
                                         extract, extract_list,
-                                        result["resp_json"], variables)
+                                        result["resp_json"], variables, extract_detail)
                                     for var_name in list(extract.keys()) + list(extract_list.keys()):
                                         if var_name in variables:
                                             step_extracted_keys.add(var_name)
@@ -4170,6 +4226,7 @@ def batch_run_chain_stream():
                                     "asserts": [re.sub(r'\x1b\[[0-9;]*m', '', m) for m in msgs],
                                     "response": resp_preview,
                                     "extracted": extracted,
+                                    "extract_detail": extract_detail,
                                     "is_mock": result.get("is_mock", False),
                                     "seq_used": result.get("seq_used") or {},
                                     "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
@@ -11188,6 +11245,11 @@ if __name__ == "__main__":
     
     # CA 证书改为懒加载：仅在 Mock 拦截 HTTPS 时按需生成，不再启动时无条件创建
     # ensure_ca_cert() 已移入 generate_domain_cert() 内部按需调用
+    # 但权限收紧要每次启动都做：私钥是明文 PEM，默认跟着程序目录继承权限，同机其他账户能直读
+    try:
+        _harden_certs_dir()
+    except Exception as _e:
+        print(f"[CA] 启动时收紧 certs 权限失败（不影响使用）：{_e}")
     
     # 预检：清理上次异常退出遗留的抓包系统代理（引擎此刻未运行，代理指向死端口会断网）
     try:

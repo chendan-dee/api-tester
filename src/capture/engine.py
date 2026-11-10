@@ -20,6 +20,39 @@ import threading
 import time
 
 
+def _restrict_acl(path):
+    """把含私钥的路径收紧到仅当前用户 / SYSTEM / Administrators 可读。
+
+    mitmproxy 不认带口令的 PEM，confdir 里必须有一份明文证书+私钥，
+    所以只能靠 NTFS 权限收口，并在引擎停止时把这份副本删掉。
+    """
+    if not os.path.exists(path):
+        return
+    if sys.platform != 'win32':
+        try:
+            os.chmod(path, 0o700 if os.path.isdir(path) else 0o600)
+        except Exception:
+            pass
+        return
+    user = os.environ.get('USERNAME') or ''
+    tail = ':(OI)(CI)F' if os.path.isdir(path) else ':F'
+    principals = ([user] if user else []) + ['*S-1-5-18', '*S-1-5-32-544']
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    for p in principals:
+        try:
+            subprocess.run(['icacls', path, '/grant:r', p + tail],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=flags, timeout=10)
+        except Exception:
+            pass
+    try:
+        subprocess.run(['icacls', path, '/inheritance:r'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=flags, timeout=10)
+    except Exception:
+        pass
+
+
 class CaptureEngine:
     """抓包引擎子进程管理器（线程安全）"""
 
@@ -76,6 +109,9 @@ class CaptureEngine:
             # 始终用最新源 CA 重写，避免 CA 更新后 mitmproxy 仍用旧签名
             with open(dst, "w", encoding="utf-8") as f:
                 f.write(cert_pem.rstrip("\n") + "\n" + key_pem.rstrip("\n") + "\n")
+            # confdir 里这份是明文证书+私钥：收紧权限，引擎停止时再删掉
+            _restrict_acl(self._confdir())
+            _restrict_acl(dst)
             print(f"[Capture] CA 已注入 mitmproxy confdir: {dst}")
             return True
         except Exception as e:
@@ -238,7 +274,18 @@ class CaptureEngine:
                 force_cleaned = self.cleanup_port_occupants()
             if was_running or force_cleaned:
                 print("[Capture] 引擎已停止")
+            self._purge_ca_copy()
             return {"ok": True, "running": False, "force_cleaned": force_cleaned}
+
+    def _purge_ca_copy(self):
+        """引擎已停：删掉 confdir 里合并了私钥的明文副本，下次 start 会重新注入"""
+        try:
+            pem = os.path.join(self._confdir(), "mitmproxy-ca.pem")
+            if os.path.exists(pem):
+                os.remove(pem)
+                print("[Capture] 已清除 confdir 内的明文 CA 副本")
+        except Exception as e:
+            print(f"[Capture] 清除明文 CA 副本失败：{e}")
 
     def cleanup_port_occupants(self):
         """按端口查找并杀掉占用进程树（兜底清理），返回清理数量"""

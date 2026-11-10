@@ -572,8 +572,9 @@ def execute_file(filename, step_filter="", loops=1, row_sets=None):
                 else:
                     resp_preview = result["resp_text"] or ""
                 extracted = []
+                extract_detail = {}
                 if result["resp_json"] is not None:
-                    extracted = E.do_extract(extract, extract_list, result["resp_json"], variables)
+                    extracted = E.do_extract(extract, extract_list, result["resp_json"], variables, extract_detail)
                 record = {
                     "step_index": idx, "name": step_name,
                     "method": req_cfg.get("method", "GET"),
@@ -584,6 +585,7 @@ def execute_file(filename, step_filter="", loops=1, row_sets=None):
                     "asserts": [__import__("re").sub(r'\x1b\[[0-9;]*m', '', m) for m in msgs],
                     "response": resp_preview,
                     "extracted": extracted,
+                    "extract_detail": extract_detail,
                     "is_mock": result.get("is_mock", False),
                     "seq_used": result.get("seq_used") or {},
                     "req_body": _resolved_cfg.get("body"),

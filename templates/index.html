@@ -16,6 +16,8 @@
   --ctl-h: 30px; --ctl-fs: 13px; --ctl-pad-x: 9px; --ctl-radius: 7px;
   /* 表格统一字号：表头与单元格同用这一档，避免各表 11/11.5/12/12.5/13 混着来 */
   --tbl-fs: 13px;
+  /* 数据库工作台字号：SQL 编辑区、结果表格、表定义共用这一档，可在「设置 → 外观 → 数据库字号」调 */
+  --db-fs: 13px;
   /* 按钮统一三档：标准 30 / 小 26 / 迷你 22，页面里不再各写一套 padding+font-size */
   --btn-h: 30px; --btn-h-sm: 26px; --btn-h-xs: 22px;
   --radius: 10px; --shadow: 0 1px 3px rgba(0,0,0,.08);
@@ -1036,32 +1038,51 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .wb-note-meta .wb-note-meta-dot { width: 3px; height: 3px; border-radius: 50%; background: #cbd5e1; }
 .wb-notes-saved-hint { font-size: 12px; font-weight: 600; color: var(--green); margin-left: auto; }
 .wb-notes-saved-hint.dirty { color: var(--yellow); }
-/* 编辑区容器与正文排版（普通底色，无纸纹纸色） */
+/* 编辑区：正文铺满整个编辑区，只留内边距（两侧不留灰边 / 不收窄成文稿纸） */
 .wb-note-editor-wrap {
   flex: 1; display: flex; flex-direction: column; min-height: 220px; overflow: hidden;
   background: var(--card);
 }
 .wb-note-editor-wrap .ql-editor,
 .wb-note-editor-wrap .wb-plain-textarea {
-  background: var(--card);
   line-height: 1.9;
   font-family: var(--sans);
 }
 /* Quill 自带 Helvetica/Arial：.ql-toolbar.ql-snow 与这里同权重，靠多一层类名压过它 */
 .wb-note-editor-wrap .ql-toolbar,
 .wb-note-editor-wrap .ql-toolbar.ql-snow { font-family: var(--sans); }
-.wb-note-editor-wrap .ql-editor { padding: 22px 26px 40px; }
+.wb-note-editor-wrap .ql-editor {
+  padding: 24px clamp(28px, 3.2%, 56px) 64px;
+  /* 极浅底 + 24px 点阵：只负责把大片白底压住，不抢正文 */
+  background-color: #fcfdff;
+  background-image: radial-gradient(rgba(148,163,184,.20) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 2px 4px;
+  font-size: 15px; color: #1e293b;
+}
 .wb-plain-textarea {
   width: 100%; height: 100%; min-height: 240px;
-  border: none; outline: none; padding: 22px 26px;
-  font-size: 14.5px; resize: none;
+  border: none; outline: none; padding: 24px clamp(28px, 3.2%, 56px);
+  font-size: 15px; resize: none;
   color: var(--text); font-family: inherit;
+  background-color: #fcfdff;
+  background-image: radial-gradient(rgba(148,163,184,.20) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 2px 4px;
 }
-.wb-note-editor-wrap .ql-editor.ql-blank::before { left: 24px; font-style: normal; color: #cbd5e1; }
+/* 占位字对齐正文首行（与上面内边距同值） */
+.wb-note-editor-wrap .ql-editor.ql-blank::before { left: clamp(28px, 3.2%, 56px); right: clamp(28px, 3.2%, 56px); top: 24px; font-style: normal; color: #c3ccdb; line-height: 1.9; }
 
-/* Quill 工具条：去边框，与其他编辑器风格一致 */
-.wb-note-editor-wrap .ql-toolbar.ql-snow { border: none !important; border-bottom: 1px solid var(--border) !important; background: var(--card); flex-shrink: 0; padding: 8px 18px; }
-.wb-note-editor-wrap .ql-snow .ql-stroke { stroke: var(--text2); }
+/* Quill 工具条：浅底色 + 分组竖线，按钮做成 26px 圆角胶囊，悬停 / 选中给底色 */
+.wb-note-editor-wrap .ql-toolbar.ql-snow {
+  border: none !important; border-bottom: 1px solid var(--border) !important;
+  background: linear-gradient(180deg, #fdfefe, #f6f8fc);
+  flex-shrink: 0; padding: 7px 14px;
+  display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px;
+  box-shadow: 0 1px 2px rgba(15,23,42,.03);
+}
+.wb-note-editor-wrap .ql-snow .ql-stroke { stroke: #414f66; stroke-linecap: round; stroke-linejoin: round; }
+.wb-note-editor-wrap .ql-snow .ql-fill { fill: #414f66; }
 
 /* ── 字号下拉（常用档位；class 形式 ql-size-*，实际大小由 CSS 定义） ── */
 .wb-note-editor-wrap .ql-snow .ql-picker.ql-size { width: 62px; }
@@ -1104,23 +1125,53 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .wb-note-editor-wrap .ql-editor .ql-size-24px { font-size: 24px; }
 .wb-note-editor-wrap .ql-editor .ql-size-28px { font-size: 28px; }
 
-.wb-note-editor-wrap .ql-toolbar.ql-snow .ql-formats { margin-right: 10px; }
-.wb-note-editor-wrap .ql-snow .ql-fill { fill: var(--text2); }
-.wb-note-editor-wrap .ql-snow .ql-picker-label { color: var(--text2); }
-.wb-note-editor-wrap .ql-snow .ql-picker.ql-expanded .ql-picker-label,
+/* 分组：每组之间一条竖线，最后一组不留线 */
+.wb-note-editor-wrap .ql-toolbar.ql-snow .ql-formats { display: inline-flex; align-items: center; margin-right: 8px; padding-right: 8px; border-right: 1px solid #e5eaf3; }
+.wb-note-editor-wrap .ql-toolbar.ql-snow .ql-formats:last-child { margin-right: 0; padding-right: 0; border-right: none; }
+.wb-note-editor-wrap .ql-snow.ql-toolbar button { width: 26px; height: 26px; padding: 4px; border-radius: 6px; }
+.wb-note-editor-wrap .ql-snow.ql-toolbar button:hover { background: #eaeffa; }
+.wb-note-editor-wrap .ql-snow.ql-toolbar button.ql-active { background: #e4ebfd; }
+.wb-note-editor-wrap .ql-snow .ql-picker { color: #414f66; }
+/* 段落样式 / 字号：做成带边框的下拉胶囊，一眼能看出可点 */
+.wb-note-editor-wrap .ql-snow .ql-picker-label { height: 26px; padding: 0 3px 0 9px; border: 1px solid #dbe2ee; border-radius: 6px; background: #fff; color: #3d4a60; box-shadow: 0 1px 2px rgba(15,23,42,.04); transition: .12s; }
+.wb-note-editor-wrap .ql-snow .ql-picker-label::before { line-height: 24px; }
+.wb-note-editor-wrap .ql-snow .ql-picker-label:hover { background: #f8faff; border-color: #c7d2fe; }
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-expanded .ql-picker-label { background: #f2f5ff; border-color: var(--primary); color: var(--primary); }
+/* 下拉面板：圆角卡片 + 悬停高亮（色板格不改内边距，否则色块会错位） */
+.wb-note-editor-wrap .ql-snow .ql-picker-options { border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 26px rgba(15,23,42,.12); padding: 4px; }
+/* 面板要跟着标签宽度走就会挤成一团，字号 / 段落样式单独撑宽 */
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-size .ql-picker-options { min-width: 80px; }
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-header .ql-picker-options { min-width: 106px; }
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-size .ql-picker-item,
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-header .ql-picker-item { display: block; padding: 4px 9px; border-radius: 5px; }
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-size .ql-picker-item:hover,
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-header .ql-picker-item:hover { background: #eef2fb; color: var(--primary); }
 .wb-note-editor-wrap .ql-snow .ql-toolbar button:hover .ql-stroke,
-.wb-note-editor-wrap .ql-snow .ql-toolbar button.ql-active .ql-stroke { stroke: var(--primary); }
+.wb-note-editor-wrap .ql-snow .ql-toolbar button.ql-active .ql-stroke,
+.wb-note-editor-wrap .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-stroke { stroke: var(--primary); }
 .wb-note-editor-wrap .ql-snow .ql-toolbar button:hover .ql-fill,
 .wb-note-editor-wrap .ql-snow .ql-toolbar button.ql-active .ql-fill { fill: var(--primary); }
-.wb-note-editor-wrap .ql-container.ql-snow { border: none !important; flex: 1; min-height: 0; font-family: inherit; font-size: 14.5px; }
-.wb-note-editor-wrap .ql-editor p { margin: 5px 0; }
-.wb-note-editor-wrap .ql-editor h1 { font-size: 24px; margin: 18px 0 8px; }
-.wb-note-editor-wrap .ql-editor h2 { font-size: 20px; margin: 16px 0 7px; }
-.wb-note-editor-wrap .ql-editor h3 { font-size: 17px; margin: 14px 0 6px; }
-.wb-note-editor-wrap .ql-editor img { max-width: 100%; border-radius: 8px; box-shadow: var(--shadow); }
-.wb-note-editor-wrap .ql-editor blockquote { border-left: 3px solid #c7d2fe; padding-left: 12px; color: var(--text2); margin: 8px 0; }
-.wb-note-editor-wrap .ql-editor .ql-code-block-container { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; margin: 10px 0; font-family: var(--mono); }
+.wb-note-editor-wrap .ql-container.ql-snow { border: none !important; flex: 1; min-height: 0; font-family: inherit; font-size: 15px; }
+/* 正文排版：段间距拉开、标题带层级、列表缩进与标记色 */
+.wb-note-editor-wrap .ql-editor p { margin: 0 0 10px; }
+.wb-note-editor-wrap .ql-editor h1 { font-size: 26px; margin: 30px 0 12px; letter-spacing: .2px; }
+.wb-note-editor-wrap .ql-editor h2 { font-size: 21px; margin: 26px 0 10px; }
+.wb-note-editor-wrap .ql-editor h3 { font-size: 17.5px; margin: 22px 0 8px; }
+.wb-note-editor-wrap .ql-editor h1:first-child,
+.wb-note-editor-wrap .ql-editor h2:first-child,
+.wb-note-editor-wrap .ql-editor h3:first-child { margin-top: 0; }
+.wb-note-editor-wrap .ql-editor ul,
+.wb-note-editor-wrap .ql-editor ol { padding-left: 24px; margin: 2px 0 12px; }
+.wb-note-editor-wrap .ql-editor li { margin: 3px 0; }
+.wb-note-editor-wrap .ql-editor li::marker { color: #9aa7bd; }
+.wb-note-editor-wrap .ql-editor a { color: var(--primary); text-decoration: underline; text-decoration-color: #c7d2fe; text-underline-offset: 3px; }
+.wb-note-editor-wrap .ql-editor img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(15,23,42,.08); margin: 6px 0; }
+.wb-note-editor-wrap .ql-editor blockquote { background: #f5f7fd; border-left: 3px solid #a5b4fc; border-radius: 0 8px 8px 0; padding: 10px 14px; color: #475569; margin: 14px 0; }
+.wb-note-editor-wrap .ql-editor code { background: #eef2f9; color: #0f172a; border-radius: 4px; padding: 2px 5px; font-family: var(--mono); font-size: .92em; }
+.wb-note-editor-wrap .ql-editor .ql-code-block-container { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; margin: 14px 0; font-family: var(--mono); }
+.wb-note-editor-wrap .ql-editor .ql-code-block-container code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
 .wb-note-editor-wrap .ql-editor .ql-code-block { font-family: inherit; }
+.wb-note-editor-wrap .ql-editor ::selection { background: #dbe6ff; }
 /* 底部操作条 */
 .wb-notes-save-bar { display: flex; align-items: center; gap: 8px; padding: 10px 22px; border-top: 1px solid var(--border); background: var(--card); flex-shrink: 0; }
 .wb-notes-kbd { font-size: 12px; color: var(--text3); margin-right: auto; }
@@ -1185,7 +1236,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-side-rail .rail-ico { font-size: 12px; line-height: 1; color: var(--text3); }
 .dbx-side-rail .rail-txt { writing-mode: vertical-rl; letter-spacing: 3px; font-size: 12px; font-weight: 600; color: var(--text2); }
 .dbx-side-rail:hover .rail-ico, .dbx-side-rail:hover .rail-txt { color: var(--primary); }
-.dbx-side-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.dbx-side-head { display: flex; align-items: center; gap: 6px; font-size: calc(var(--db-fs, 13px) * .96); font-weight: 600; color: var(--text); }
 .dbx-side-ops { margin-left: auto; display: flex; gap: 4px; }
 .dbx-mini { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 2px 7px; font-size: 11px; line-height: 1.6; color: var(--text2); cursor: pointer; font-family: inherit; white-space: nowrap; }
 .dbx-mini:hover { border-color: var(--primary); color: var(--primary); background: #eef1fe; }
@@ -1245,7 +1296,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-tables::-webkit-scrollbar-track { background: transparent; }
 .dbx-tables-stat { font-size: 11px; color: var(--text3); padding: 0 2px; min-height: 15px; }
 /* 表列表折叠：收起后只留一行标题，点一下再展开 */
-.dbx-tables-head { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 1px 2px; font-size: 11.5px; font-weight: 600; color: var(--text2); cursor: pointer; user-select: none; }
+.dbx-tables-head { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 1px 2px; font-size: calc(var(--db-fs, 13px) * .885); font-weight: 600; color: var(--text2); cursor: pointer; user-select: none; }
 .dbx-tables-head:hover { color: var(--primary); }
 .dbx-tables-head .caret { display: inline-block; font-size: 10px; color: var(--text3); transition: transform .15s; }
 .dbx-tables-head .dbx-tables-stat { font-weight: 400; }
@@ -1254,7 +1305,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-tables-empty { padding: 26px 8px; text-align: center; font-size: 12px; line-height: 1.9; color: var(--text3); }
 .dbx-tbl { border: 1px solid var(--border); border-radius: 7px; background: #fff; overflow: hidden; flex-shrink: 0; transition: border-color .15s, box-shadow .15s; }
 .dbx-tbl.open { border-color: #c7d2fe; box-shadow: 0 1px 5px rgba(79,110,247,.09); }
-.dbx-tbl-head { display: flex; align-items: center; gap: 7px; padding: 7px 9px; cursor: pointer; font-size: 13px; }
+.dbx-tbl-head { display: flex; align-items: center; gap: 7px; padding: 7px 9px; cursor: pointer; font-size: var(--db-fs, 13px); }
 .dbx-tbl-head:hover { background: #f1f5ff; }
 .dbx-tbl-caret { flex-shrink: 0; margin-left: auto; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 4px; font-size: 10px; color: var(--text3); cursor: pointer; }
 .dbx-tbl-caret:hover { background: #e8eefc; color: var(--primary); }
@@ -1264,20 +1315,20 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-tbl.sel .dbx-tbl-head { background: #f3f6ff; }
 .dbx-tbl.sel .dbx-tbl-caret { color: var(--primary); }
 .dbx-cols { border-top: 1px solid #e6ebf5; background: #f8fafc; padding: 4px 6px 6px; display: flex; flex-direction: column; gap: 1px; }
-.dbx-col { display: flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 5px; font-size: 11.5px; line-height: 1.5; color: #334155; cursor: pointer; font-family: var(--mono); }
+.dbx-col { display: flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 5px; font-size: calc(var(--db-fs, 13px) * .885); line-height: 1.5; color: #334155; cursor: pointer; font-family: var(--mono); }
 .dbx-col:hover { background: #e8eefc; color: #1d4ed8; }
 .dbx-col .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dbx-col .ty { flex-shrink: 0; font-size: 10px; color: var(--text3); }
+.dbx-col .ty { flex-shrink: 0; font-size: calc(var(--db-fs, 13px) * .77); color: var(--text3); }
 .dbx-col:hover .ty { color: #6d8bd6; }
 .dbx-col .pk { flex-shrink: 0; padding: 0 3px; border-radius: 3px; background: #fef3c7; color: #b45309; font-size: 9px; font-weight: 700; line-height: 1.6; }
 .dbx-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
 /* 表工作区：标题 + 数据 / 表定义 / SQL 三个页签 */
 .dbx-tableinfo { border: 1px solid #c7d2fe; border-radius: 9px; background: #fff; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .dbx-ti-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: linear-gradient(180deg, #f7f9ff, #fff); border-bottom: 1px solid #e6ebf5; }
-.dbx-ti-title { font-size: 13.5px; font-weight: 600; color: var(--text); font-family: var(--mono); }
-.dbx-ti-comment { font-size: 11.5px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbx-ti-title { font-size: calc(var(--db-fs, 13px) * 1.04); font-weight: 600; color: var(--text); font-family: var(--mono); }
+.dbx-ti-comment { font-size: calc(var(--db-fs, 13px) * .885); color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbx-tabs { display: flex; gap: 2px; padding: 0 10px; background: #fbfcfe; border-bottom: 1px solid #e6ebf5; }
-.dbx-tab { border: none; background: none; padding: 8px 14px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-size: 12.5px; color: var(--text2); cursor: pointer; font-family: inherit; }
+.dbx-tab { border: none; background: none; padding: 8px 14px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-size: calc(var(--db-fs, 13px) * .96); color: var(--text2); cursor: pointer; font-family: inherit; }
 .dbx-tab:hover:not(:disabled) { color: var(--primary); }
 .dbx-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); background: #fff; }
 .dbx-tab:disabled { color: #cbd5e1; cursor: not-allowed; }
@@ -1351,15 +1402,23 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-ct-chk { display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .dbx-ct-chk input { width: 13px; height: 13px; margin: 0; accent-color: var(--primary); }
 /* 两层必须量体完全一致：textarea 的 padding/边框/换行规则都要和高亮层一样，
-   否则光标（textarea 画）与彩色文字（高亮层画）会错开几像素，看起来像“光标跑偏” */
-#dbx-sql { height: 190px; min-height: 96px; max-height: 58vh; resize: vertical; display: block; position: relative; z-index: 1; padding: 12px; border: 1px solid var(--border); border-radius: 7px; font-family: var(--mono); font-size: 13px; line-height: 1.65; tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; font-variant-ligatures: none; background: transparent; color: transparent; caret-color: var(--text); scrollbar-width: none; }
-#dbx-sql::-webkit-scrollbar { display: none; }
+   否则光标（textarea 画）与彩色文字（高亮层画）会错开几像素，看起来像“光标跑偏”。
+   滚动条也一样：两层都靠 scrollbar-gutter 预留同一条槽，
+   不然后出现的滚动条一占宽度，两层的换行点就不同了 */
+#dbx-sql { height: 190px; min-height: 96px; max-height: 58vh; resize: vertical; display: block; position: relative; z-index: 1; padding: 12px; border: 1px solid var(--border); border-radius: 7px; font-family: var(--mono); font-size: var(--db-fs, 13px); line-height: 1.65; tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; font-variant-ligatures: none; background: transparent; color: transparent; caret-color: var(--text); overflow-y: auto; scrollbar-gutter: stable; }
+/* 滚动条要看得见，否则语句多到溢出时看不出下面还有内容。
+   轨道给一点底色，滑块深一号；宽度固定 10px，高亮层靠 gutter 留出同样一条 */
+#dbx-sql::-webkit-scrollbar { width: 10px; }
+#dbx-sql::-webkit-scrollbar-track { background: #f1f5fb; border-radius: 6px; }
+#dbx-sql::-webkit-scrollbar-thumb { background: #bcc9dd; border-radius: 6px; border: 2px solid #f1f5fb; }
+#dbx-sql::-webkit-scrollbar-thumb:hover { background: #93a5c2; }
 #dbx-sql::placeholder { color: var(--text3); }
 #dbx-sql::selection { background: rgba(59,130,246,.22); }
 /* 着色层：textarea 文字透明，彩色文本由这层绘制。
    只改颜色、不改字重字号——两层叠在一起，字宽一变光标就和文字错开。
    配色：关键字蓝、函数紫、字符串绿、数字/字面量橙、表名青、字段黑、注释淡灰 */
-.dbx-sql-hl { position: absolute; inset: 0; margin: 0; padding: 12px; overflow: hidden; border: 1px solid transparent; border-radius: 7px; font-family: var(--mono); font-size: 13px; line-height: 1.65; tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; font-variant-ligatures: none; color: var(--text); pointer-events: none; }
+.dbx-sql-hl { position: absolute; inset: 0; margin: 0; padding: 12px; overflow: hidden; border: 1px solid transparent; border-radius: 7px; font-family: var(--mono); font-size: var(--db-fs, 13px); line-height: 1.65; tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; font-variant-ligatures: none; color: var(--text); pointer-events: none; scrollbar-gutter: stable; }
+.dbx-sql-hl::-webkit-scrollbar { width: 10px; }
 .dbx-sql-hl .kw { color: #2563eb; }
 .dbx-sql-hl .fn { color: #7c3aed; }
 .dbx-sql-hl .str { color: #15803d; }
@@ -1369,6 +1428,33 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-sql-hl .qid.tbl { color: #0f766e; }
 /* 注释不会被执行，用淡灰跟可执行的语句区分开 */
 .dbx-sql-hl .cmt { color: #a3adbb; }
+/* 语句前的行内执行三角：两层同时把左侧 padding 加宽到 44px 装按钮。
+   按钮宽 16px 配 -16px 负 margin，inline 占位刚好归零，两层才继续逐字对齐；
+   再用 transform 把它平移到左侧空档里（不占位也不撑动后面的字）——
+   这样按钮占 12~28px，正文从 44px 开始，中间留 16px 空档。
+   以前按钮右边界紧贴着第一个字，点行首想放光标再 Ctrl+/ 注释，很容易点到三角把语句跑出去；
+   那段空档是 textarea，点下去只会把光标放到行首。
+   三角用 CSS 画（不依赖字体，换机器不会被渲染成彩色小方块） */
+#dbx-sql, .dbx-sql-hl { padding-left: 44px; }
+.dbx-sql-hl .dbx-run { display: inline-block; position: relative; z-index: 2; width: 16px; height: 18px; margin-left: -16px; transform: translateX(-16px); vertical-align: middle; pointer-events: auto; cursor: pointer; -webkit-user-select: none; user-select: none; }
+.dbx-sql-hl .dbx-run::before { content: ''; position: absolute; z-index: 1; top: 50%; left: 4px; margin-top: -5px; width: 0; height: 0; border-left: 7px solid #b9c6d9; border-top: 5px solid transparent; border-bottom: 5px solid transparent; transition: border-left-color .12s; }
+/* hover 底色只铺在按钮自己的盒子里（13~27px），不向正文方向溢出 */
+.dbx-sql-hl .dbx-run::after { content: ''; position: absolute; z-index: 0; top: 50%; left: 1px; margin-top: -8px; width: 14px; height: 16px; border-radius: 4px; background: transparent; transition: background .12s; }
+.dbx-sql-hl .dbx-run:hover::before { border-left-color: var(--primary); }
+.dbx-sql-hl .dbx-run:hover::after { background: #eef2ff; }
+.dbx-sql-hl .dbx-run:active::after { background: #dfe6fd; }
+/* SQL 编辑页顶栏：左边写当前库与语句条数，右边是选表 / 常用语句 / 格式化 / 执行。
+   原先挂在页签条上，打开的表一多就和表标签抢位置，显得突兀；
+   底部工具条也收到这里，编辑器下方只留提示和清空 */
+.dbx-sql-top { flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.dbx-sql-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text3); }
+/* 顶栏里的下拉要跟按钮一样高，不再用数据条那种 100% 宽 */
+.dbx-sql-top .dbx-select { width: auto; padding: 4px 22px 4px 8px; font-size: 12px; }
+.dbx-sql-top .btn { flex-shrink: 0; height: 30px; padding: 0 11px; }
+.dbx-runall { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px; border: 1px solid #d8dff3; border-radius: 15px; background: #f5f8ff; color: #4a64a8; font-family: inherit; font-size: 11.5px; font-weight: 600; line-height: 1.5; cursor: pointer; transition: background .15s, border-color .15s, color .15s; }
+.dbx-runall .ic { width: 0; height: 0; border-left: 6px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+.dbx-runall:hover { border-color: var(--primary); background: var(--primary); color: #fff; }
+.dbx-runall:active { transform: translateY(1px); }
 /* SQL 自动补全：贴着光标弹出的表名 / 字段候选 */
 .dbx-sql-box { position: relative; }
 .dbx-sql-ac { position: absolute; z-index: 40; display: none; min-width: 210px; max-width: 340px; max-height: 236px; overflow: auto; padding: 4px; border: 1px solid #c7d2fe; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(23,37,84,.18); }
@@ -1387,7 +1473,18 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-filebar .dbx-hint { margin-left: 2px; }
 .dbx-hint { font-size: 11.5px; color: var(--text3); }
 .dbx-hint.err { color: var(--red); }
-.dbx-result { border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; max-height: 620px; overflow: auto; font-size: 12px; }
+/* SQL 文件状态：只在需要提醒时才出现（有改动未保存 / 保存失败），存好了就隐起来；
+   隐时用 visibility 保留占位，免得胶囊出入把旁边的按钮推来推去 */
+.dbx-file-state { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 96px; height: 22px; padding: 0 9px; border-radius: 11px; background: #eef1f6; color: var(--text3); font-size: 11px; line-height: 1; white-space: nowrap; }
+.dbx-file-state.is-idle { visibility: hidden; }
+.dbx-file-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
+.dbx-file-state.dirty { background: #eff6ff; color: var(--primary); font-weight: 600; }
+.dbx-file-state.dirty::before { opacity: 1; }
+/* 已保存：去掉底色只留绿点 + 时间，抢眼程度让给「有改动未保存」 */
+.dbx-file-state.saved { background: transparent; color: var(--text3); }
+.dbx-file-state.saved::before { background: #16a34a; opacity: 1; }
+.dbx-file-state.err { background: #fee2e2; color: #b91c1c; }
+.dbx-result { border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; max-height: 620px; overflow: auto; font-size: var(--db-fs, 13px); }
 /* SQL 结果只读：交互与数据页保持一致（行号选行 / 表头排序 / 框选复制 / 右键菜单） */
 /* 多语句：每条有结果集的语句一个胶囊，点选切换展示 */
 .dbx-rs-bar { display: none; gap: 6px; flex-wrap: wrap; }
@@ -1400,7 +1497,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-rs .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .dbx-rs .n { flex-shrink: 0; font-size: 10.5px; color: var(--text3); }
 .dbx-rs.on .n { color: #6d8bd6; }
-.dbx-result-empty { padding: 30px 12px; text-align: center; font-size: 12px; line-height: 1.9; color: var(--text3); }
+.dbx-result-empty { padding: 30px 12px; text-align: center; font-size: calc(var(--db-fs, 13px) * .92); line-height: 1.9; color: var(--text3); }
 /* 必须用 separate：collapse 下 sticky 表头在 Chrome 里背景与边框不跟着表头移动，
    滚动时表头上边缘会被切掉半截、下一行的字还会透上来，看着就是一条白缝 */
 .dbx-grid { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
@@ -1479,7 +1576,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-doc-tab .x:hover { background: #fee2e2; color: var(--red); }
 .dbx-doc-tab .dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; }
 /* 分页条固定在表格下方，条数选择也放在这里 */
-.dbx-pager { flex-shrink: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px 0; font-size: 11.5px; color: var(--text3); }
+.dbx-pager { flex-shrink: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px 0; font-size: calc(var(--db-fs, 13px) * .885); color: var(--text3); }
 .dbx-pager .dbx-select { width: auto; min-width: 86px; padding: 3px 20px 3px 6px; font-size: 11.5px; }
 .dbx-pager .dbx-pager-sep { width: 1px; height: 14px; background: var(--border); }
 .dbx-pager button { margin-left: 0; }
@@ -1490,15 +1587,27 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-pv-arrow.top { top: -5px; border-right: 0; border-bottom: 0; }
 .dbx-pv-arrow.bottom { bottom: -5px; border-left: 0; border-top: 0; background: #fbfcff; }
 .dbx-pv-head { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-bottom: 1px solid #e8edfa; background: #f5f8ff; border-radius: 7px 7px 0 0; }
-.dbx-pv-col { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; font-weight: 700; color: var(--primary); }
-.dbx-pv-meta { font-size: 11px; color: var(--text3); }
+.dbx-pv-col { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: calc(var(--db-fs, 13px) * .885); font-weight: 700; color: var(--primary); }
+.dbx-pv-meta { font-size: calc(var(--db-fs, 13px) * .85); color: var(--text3); }
 .dbx-pv-acts { margin-left: auto; flex-shrink: 0; display: flex; gap: 6px; }
-.dbx-pv-body { max-height: 120px; overflow: auto; padding: 7px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.dbx-pv-body { max-height: 120px; overflow: auto; padding: 7px 10px; font-family: var(--mono); font-size: calc(var(--db-fs, 13px) * .92); line-height: 1.7; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .dbx-preview.wide .dbx-pv-body { max-height: min(38vh, 300px); }
 .dbx-pv-body.nul { color: #cbd5e1; }
 /* 筛选框字段自动补全 */
 .dbx-ac-wrap { position: relative; flex: 1; min-width: 220px; display: flex; }
 .dbx-ac-wrap .dbx-input { flex: 1; width: 100%; min-width: 0; }
+/* 条件输入框着色：两层做法同 SQL 编辑器——输入框文字透明，底层画彩色文字，光标靠 caret-color 留在上层。
+   两层必须同盒模型（inset:1px 让开边框、padding 与 .dbx-input 一致），否则文字会重影 */
+.dbx-where-hl { position: absolute; inset: 1px; padding: 6px 8px; overflow: hidden; white-space: pre; pointer-events: none; font-family: inherit; font-size: 12.5px; line-height: normal; color: var(--text); }
+#dbx-data-where { position: relative; z-index: 1; background: transparent; color: transparent; caret-color: var(--text); }
+#dbx-data-where::placeholder { color: #9aa5b4; }
+#dbx-data-where::selection { background: rgba(79,110,247,.2); }
+/* 颜色表与 SQL 编辑器一致：关键字蓝 / 函数紫 / 字符串绿 / 字面量橙，
+   字段名、比较符、括号一律正文色——条件里再编一套色板就花哨了 */
+.dbx-where-hl .kw { color: #2563eb; }
+.dbx-where-hl .fn { color: #7c3aed; }
+.dbx-where-hl .str { color: #15803d; }
+.dbx-where-hl .num { color: #b45309; }
 .dbx-ac { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 10040; max-height: 240px; overflow: auto; padding: 4px; background: #fff; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(15,23,42,.14); }
 .dbx-ac.on { display: block; }
 .dbx-ac-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; font-size: 12px; color: var(--text); cursor: pointer; }
@@ -1557,8 +1666,12 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dbx-fl-row .dbx-fl-del:hover { border-color: var(--red); color: var(--red); background: #fff5f5; }
 .dbx-fl-row .dbx-fl-raw { grid-column: 2 / 5; font-family: var(--mono); font-size: 11.5px; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbx-fl-row .dbx-fl-tag { grid-column: 1; font-size: 11px; color: var(--text3); text-align: center; }
-.dbx-fl-sql { margin-top: 12px; padding: 8px 10px; border: 1px dashed #c7d2fe; border-radius: 7px; background: #f8faff; font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #334155; word-break: break-all; }
+/* 生成的条件语句放在条件行上面：条件加多了也不会被挤到最下面去 */
+.dbx-fl-sql { margin: 0 0 12px; padding: 8px 10px; border: 1px dashed #c7d2fe; border-radius: 7px; background: #f8faff; font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #334155; word-break: break-all; }
 .dbx-fl-sql:empty { display: none; }
+/* 条件多时弹窗内部滚动，标题与按钮留在可视区，不把窗口顶出屏幕 */
+#dbx-filter-overlay .var-edit-dialog { max-height: 86vh; display: flex; flex-direction: column; }
+#dbx-filter-overlay .var-edit-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 /* 关联查询向导 */
 .dbx-jw-grid { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
 .dbx-jw-grid > label { font-size: 12px; font-weight: 600; color: var(--text2); text-align: right; }
@@ -1833,6 +1946,8 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .settings-panel .sp-row:last-child { border-bottom:none; }
 .settings-panel .sp-row-label { font-size:13px;font-weight:600;color:var(--text);line-height:1.4; }
 .settings-panel .sp-row-desc { display:block;font-size:11.5px;font-weight:400;color:var(--text3);line-height:1.5;margin-top:3px; }
+/* 每项标明归属的左侧一级菜单，光看「请求 Body 字号」看不出去哪个页面调 */
+.settings-panel .sp-row-mod { display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;background:#eef2ff;color:var(--primary);font-size:10.5px;font-weight:600;line-height:1.8;vertical-align:1px;white-space:nowrap; }
 .settings-panel .sp-row-ctl { min-width:0;display:flex;align-items:center;gap:10px; }
 .settings-panel .sp-num { display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:#fff;transition:border-color .15s,box-shadow .15s; }
 .settings-panel .sp-num:focus-within { border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,110,247,.12); }
@@ -2027,11 +2142,20 @@ select.cases-env-select.has-env { color: var(--primary); border-color: #c7d2fe; 
 .cases-hl-wrap:has(.cases-hl-input.bad) .cases-hl { border-color: var(--red); }
 .cases-hl-wrap.ime .cases-hl { visibility: hidden; }
 .cases-hl-wrap.ime .cases-hl-input { color: var(--text); background: #fff !important; }
-.cases-hl-wrap .hl-var-ok { color: #15803d; background: rgba(34,197,94,.16); border-radius: 3px; }
-.cases-hl-wrap .hl-var-ext { color: #4338ca; background: rgba(99,102,241,.16); border-radius: 3px; }
-.cases-hl-wrap .hl-var-bad { color: #b91c1c; background: rgba(239,68,68,.16); border-radius: 3px; text-decoration: underline wavy rgba(185,28,28,.55); }
+.cases-hl-wrap .hl-var-ok, .cases-hl1 .hl-var-ok { color: #15803d; background: rgba(34,197,94,.16); border-radius: 3px; }
+.cases-hl-wrap .hl-var-ext, .cases-hl1 .hl-var-ext { color: #4338ca; background: rgba(99,102,241,.16); border-radius: 3px; }
+.cases-hl-wrap .hl-var-bad, .cases-hl1 .hl-var-bad { color: #b91c1c; background: rgba(239,68,68,.16); border-radius: 3px; text-decoration: underline wavy rgba(185,28,28,.55); }
 /* 数据集合列的引用色：跟变量（绿）/ 提取（蓝）分开，一眼能看出这个 ${x} 是表里的 */
-.cases-hl-wrap .hl-var-ds { color: #b45309; background: rgba(245,158,11,.18); border-radius: 3px; }
+.cases-hl-wrap .hl-var-ds, .cases-hl1 .hl-var-ds { color: #b45309; background: rgba(245,158,11,.18); border-radius: 3px; }
+/* 单行输入框的 ${变量} 着色（URL 栏 / 参数 / Headers / 表单键值 / 断言）：
+   与 Body 同一套配色，输入文字透明、彩色文字由覆盖层绘制；单行不换行，横向滚动跟随 */
+.cases-hl1 { position: relative; display: block; width: 100%; min-width: 0; }
+.cases-hl1 > input { width: 100%; }
+.cases-hl1 > .cases-hl1-bg { position: absolute; top: 0; right: 0; bottom: 0; left: 0; margin: 0; box-sizing: border-box; overflow: hidden; white-space: pre; pointer-events: none; font: inherit; color: var(--text); }
+.cases-hl1.hl1-on > input { color: transparent; caret-color: #1e293b; }
+.cases-hl1.hl1-ime > .cases-hl1-bg { visibility: hidden; }
+.cases-hl1.hl1-ime > input { color: var(--text); }
+.cases-reqbar > .cases-hl1 { flex: 1; min-width: 0; }
 /* 请求栏下方的取值来源条：区分 提取 / 变量 / 数据集合 */
 .cases-refhint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 16px 3px; font-size: 12px; color: var(--text2); }
 .cases-refhint-t { font-weight: 600; color: var(--text); }
@@ -2146,56 +2270,103 @@ select.cases-env-select.has-env { color: var(--primary); border-color: #c7d2fe; 
 #cases-batch-setup { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 #cases-batch-run { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cases-batch-wrap { max-height: none; overflow: auto; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; flex: 1; min-height: 0; }
-.cases-batch-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
-.cases-batch-table th { position: sticky; top: 0; background: #f1f5f9; text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text2); z-index: 1; white-space: nowrap; }
-.cases-batch-table td { padding: 6px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; white-space: nowrap; }
+.cases-batch-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: var(--batch-fs, 13px); }
+/* 带 #cases-batch-overlay 前缀：表格 th/td 后面的全局 --tbl-fs 规则同样权重，不加前缀会盖掉弹窗字号 */
+#cases-batch-overlay .cases-batch-table th { position: sticky; top: 0; background: #f1f5f9; text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text2); z-index: 1; white-space: nowrap; font-size: var(--batch-fs, 13px); }
+#cases-batch-overlay .cases-batch-table td { padding: 6px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; white-space: nowrap; font-size: var(--batch-fs, 13px); overflow: hidden; text-overflow: ellipsis; }
 .cases-batch-table tr:hover td { background: #f8faff; }
-#cases-batch-progress { font-size: 12px; color: var(--text2); min-height: 16px; }
-.cases-batch-summary { font-size: 12.5px; color: var(--text2); margin-right: auto; }
-.cases-batch-name { max-width: 620px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 末尾那个展开箭头列：不给足宽度会带上省略号 */
+#cases-batch-overlay .cases-batch-table tr.cases-batch-row td:last-child { text-align: center; padding-left: 4px; padding-right: 6px; }
+/* 结果区字号：--batch-fs 在「设置 → 外观 → 批量运行字号」调（存 apiTester.codeFontSize.batch） */
+#cases-batch-progress { font-size: calc(var(--batch-fs, 13px) * .92); color: var(--text2); min-height: 16px; }
+.cases-batch-summary { font-size: calc(var(--batch-fs, 13px) * .96); color: var(--text2); margin-right: auto; }
+.cases-batch-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 运行前的接口勾选：只跑选中的几个，不必整组跑 */
-.cases-batch-pickbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--text2); }
+.cases-batch-pickbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: calc(var(--batch-fs, 13px) * .96); color: var(--text2); }
 .cases-batch-pickall { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--text); }
 .cases-batch-pickall input { width: auto; margin: 0; }
 .cases-batch-pickcount { color: var(--primary); font-weight: 600; }
-.cases-batch-picktip { color: var(--text3); font-size: 11.5px; }
+.cases-batch-picktip { color: var(--text3); font-size: calc(var(--batch-fs, 13px) * .89); }
 .cases-batch-loops { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--text2); }
 .cases-batch-loops input { width: 66px; text-align: center; }
 .cases-batch-picklist { margin-top: 10px; max-height: none; flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
-.cases-batch-pickitem { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 13px; margin: 0; }
+.cases-batch-pickitem { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: var(--batch-fs, 13px); margin: 0; }
 .cases-batch-pickitem:last-child { border-bottom: none; }
 .cases-batch-pickitem:hover { background: #f8faff; }
 .cases-batch-pickitem input[type=checkbox] { width: auto; margin: 0; flex-shrink: 0; }
 .cases-batch-pickitem .pname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
-.cases-batch-pickitem .purl { margin-left: 4px; color: var(--text3); font-size: 12px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cases-batch-pickitem .pbadge { font-size: 10px; color: #6d28d9; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
+.cases-batch-pickitem .purl { margin-left: 4px; color: var(--text3); font-size: calc(var(--batch-fs, 13px) * .92); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cases-batch-pickitem .pbadge { font-size: calc(var(--batch-fs, 13px) * .77); color: #6d28d9; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
 /* 结果行：点一下展开请求与响应详情 */
 .cases-batch-table tr.cases-batch-row { cursor: pointer; }
 .cases-batch-table tr.cases-batch-row.open td { background: #f5f7ff; }
 .cases-batch-caret { display: inline-block; color: #cbd5e1; font-size: 10px; transition: transform .15s, color .15s; }
 .cases-batch-table tr.cases-batch-row.open .cases-batch-caret { transform: rotate(90deg); color: var(--primary); }
-.cases-batch-detail td { background: #fbfcff; padding: 0 !important; white-space: normal; }
-.cases-batch-detail-box { padding: 12px 14px 14px; }
-.cases-batch-detail-box .db-sec { margin-bottom: 10px; }
-.cases-batch-detail-box .db-sec:last-child { margin-bottom: 0; }
-.cases-batch-detail-box .db-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 4px; }
-.cases-batch-detail-box .db-line { font-size: 12px; line-height: 1.85; color: var(--text); word-break: break-all; }
-.cases-batch-detail-box .db-line b { color: var(--text3); font-weight: 500; margin-right: 6px; }
-.cases-batch-detail-box code { font-family: var(--mono); font-size: 12px; background: #fff; border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
-.cases-batch-detail-box pre { margin: 0; padding: 9px 11px; background: #fff; border: 1px solid var(--border); border-radius: 6px; max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px; line-height: 1.65; color: var(--text); }
-.cases-batch-detail-box .db-assert { font-size: 12px; line-height: 1.9; word-break: break-all; }
+/* 展开行：必须带 id 前缀，否则上面的 nowrap / overflow:hidden 会把它也当成普通单元格，整段详情被拉成一行再剪掉；
+   用 > td 只作用于外层容器格，里层详情表（kv / asrt）的单元格保留自己的边距与换行 */
+#cases-batch-overlay .cases-batch-table tr.cases-batch-detail > td { background: #fbfcff; padding: 0 !important; white-space: normal; overflow: visible; text-overflow: clip; }
+.cases-batch-detail-box { padding: 12px 14px 14px; font-size: var(--batch-fs, 13px); }
+.cases-batch-detail-box code { font-family: var(--mono); font-size: calc(var(--batch-fs, 13px) * .9); background: #fff; border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; word-break: break-all; overflow-wrap: anywhere; }
 .cases-batch-detail-box .db-ok { color: var(--green); }
 .cases-batch-detail-box .db-bad { color: var(--red); }
+/* 展开详情收成一张两列表：左边项目名、右边内容；请求 / 响应 / 断言各用一条整行标题隔开，不再一层层堆小卡片 */
+.cases-batch-detail-box .db-kv-wrap { border: 1px solid #e4eaf4; border-radius: 8px; overflow: hidden; background: #fff; }
+.cases-batch-detail-box .db-kv { width: 100%; table-layout: auto; border-collapse: collapse; font-size: calc(var(--batch-fs, 13px) * .94); }
+/* 首列宽度交给内容：width:1% 只是「尽量窄」的提示，配合表头 nowrap，
+   短标签就窄、长标签也不会被挤成两行；右侧值列自然吃掉剩下的宽度 */
+.cases-batch-detail-box .db-kv .kv-col-k { width: 1%; }
+/* 下面几条必须带 #cases-batch-overlay：外层 .cases-batch-table th 是 ID 选择器（sticky + nowrap + 灰底），不加前缀会把详情表的表头一起接管 */
+#cases-batch-overlay .cases-batch-detail-box .db-kv th,
+#cases-batch-overlay .cases-batch-detail-box .db-kv td { position: static; top: auto; z-index: auto; padding: 6px 12px; border-bottom: 1px solid #edf1f8; text-align: left; vertical-align: top; white-space: normal; line-height: 1.7; word-break: break-all; overflow-wrap: anywhere; overflow: visible; text-overflow: clip; font-size: calc(var(--batch-fs, 13px) * .94); }
+/* 左侧标签列：不折行（${finalOrderNo} 这种变量名一折行就看不清），列宽交给内容自适应 */
+#cases-batch-overlay .cases-batch-detail-box .db-kv th { white-space: nowrap; word-break: normal; }
+/* 参数：名称 | 值 内嵌小表，名称列按内容自适应且不折行，值列吃满剩余宽度 */
+#cases-batch-overlay .cases-batch-detail-box .db-kv .kv-sub { width: 100%; table-layout: auto; border-collapse: collapse; }
+#cases-batch-overlay .cases-batch-detail-box .db-kv .kv-sub th { width: 1%; padding: 2px 14px 2px 0; border: none; background: transparent; font-weight: 500; color: var(--text3); white-space: nowrap; word-break: normal; font-family: var(--mono); line-height: 1.7; font-size: calc(var(--batch-fs, 13px) * .9); }
+#cases-batch-overlay .cases-batch-detail-box .db-kv .kv-sub td { padding: 2px 0; border: none; background: transparent; white-space: normal; word-break: break-all; overflow-wrap: anywhere; font-family: var(--mono); line-height: 1.7; font-size: calc(var(--batch-fs, 13px) * .9); }
+#cases-batch-overlay .cases-batch-detail-box .db-kv th { font-weight: 500; color: var(--text3); background: #f8fafd; }
+/* 分组标题行：整行铺过去，颜色比标签列深一档，一眼看出分了几段 */
+#cases-batch-overlay .cases-batch-detail-box .db-kv tr.kv-sec th { padding: 5px 12px; font-size: calc(var(--batch-fs, 13px) * .87); font-weight: 600; letter-spacing: .4px; color: var(--text2); background: #f1f5fc; border-bottom: 1px solid #e4eaf4; }
+#cases-batch-overlay .cases-batch-detail-box .db-kv tr:last-child th,
+#cases-batch-overlay .cases-batch-detail-box .db-kv tr:last-child td { border-bottom: none; }
+.cases-batch-detail-box .db-kv .db-warn { color: #b45309; }
+.cases-batch-detail-box .db-kv pre { margin: 0; padding: 0; border: none; background: transparent; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: calc(var(--batch-fs, 13px) * .9); line-height: 1.65; white-space: pre-wrap; word-break: break-all; color: var(--text); }
+/* 断言 / 提取变量 / 自增取号：直接用单个接口运行结果那套 asrt 表格（同表头底色、斑马纹、列间竖线），
+   只把字号接到 --batch-fs 上，跟着「设置 → 外观 → 批量运行字号」缩放；
+   外层 .cases-batch-table td 是 ID 选择器（nowrap / overflow:hidden / 6px 12px），
+   这里同样带 #cases-batch-overlay 前缀才能把嵌套表格的单元格还原成正常换行 */
+#cases-batch-overlay .cases-batch-detail-box .asrt-sum { margin: 16px 0 10px; }
+#cases-batch-overlay .cases-batch-detail-box .asrt-sub { margin-top: 16px; font-size: calc(var(--batch-fs, 13px) * .92); }
+#cases-batch-overlay .cases-batch-detail-box .asrt-table { font-size: calc(var(--batch-fs, 13px) * .96); }
+/* 表头要连 position / 背景 / 字色一起夺回来：外层 .cases-batch-table th 是 sticky + 灰底，不写就变成吸顶条 */
+#cases-batch-overlay .cases-batch-detail-box .asrt-table th { position: static; top: auto; z-index: auto; background: #eef3fb; color: var(--text); padding: 7px 10px; border-bottom: 1px solid #d5dee9; white-space: nowrap; overflow: visible; text-overflow: clip; font-size: calc(var(--batch-fs, 13px) * .89); }
+#cases-batch-overlay .cases-batch-detail-box .asrt-table td { padding: 7px 10px; border-top: 1px solid #c6d3e6; border-bottom: none; white-space: normal; overflow: visible; text-overflow: clip; font-size: calc(var(--batch-fs, 13px) * .96); }
+/* 变量名列：不折行，列宽=220px（与单接口一致），字变大后按内容自动撑开，${超长变量名} 不会被拆两行 */
+#cases-batch-overlay .cases-batch-detail-box .asrt-table td.asrt-mono { white-space: nowrap; }
+/* 「#」「结果」列固定窄宽，字调大后不能再拆行 */
+#cases-batch-overlay .cases-batch-detail-box .asrt-table td.asrt-c-type,
+#cases-batch-overlay .cases-batch-detail-box .asrt-table td.asrt-c-idx,
+#cases-batch-overlay .cases-batch-detail-box .asrt-table td.asrt-c-res { white-space: nowrap; }
+/* 胶囊和结果徽章随字号一起缩放，不然 24px 的大表里还是 11.5px 的小字 */
+#cases-batch-overlay .cases-batch-detail-box .asrt-chip,
+#cases-batch-overlay .cases-batch-detail-box .asrt-res-badge { font-size: calc(var(--batch-fs, 13px) * .82); }
+/* 单元格里的等宽文本跟着所在格的字号走，不再回到全站 13px */
+#cases-batch-overlay .cases-batch-detail-box .asrt-table .asrt-mono,
+#cases-batch-overlay .cases-batch-detail-box .asrt-table .asrt-c-idx { font-size: inherit; }
+.cases-batch-detail-box .kv-hd { font-family: var(--mono); font-size: calc(var(--batch-fs, 13px) * .9); line-height: 1.7; }
+.cases-batch-detail-box .kv-hd b { color: var(--text3); font-weight: 500; }
+.cases-batch-detail-box .kv-url { font-family: var(--mono); word-break: break-all; }
+.cases-batch-detail-box .kv-m { color: var(--text3); font-weight: 600; }
 .cases-resp-close:hover { color: var(--red); }
 .cases-resp-body { flex: 1; overflow: auto; padding: 12px 16px; min-height: 0; }
 .cases-resp-body pre { margin: 0; font-family: var(--mono); font-size: var(--resp-code-fs, 12.5px); line-height: 1.7; white-space: pre-wrap; word-break: break-all; color: #3b4658; }
 /* JSON：换掉死板的等宽观感，键/值/数字/布尔各一色，不再一片黑 */
 .cases-resp-body pre.resp-json { font-family: var(--mono); font-size: var(--resp-code-fs, 12.5px); line-height: 1.85; letter-spacing: .1px; word-break: normal; overflow-wrap: anywhere; color: #37455c; }
-.cases-resp-body .j-k { color: #2f6bb5; }
-.cases-resp-body .j-s { color: #a3620f; }
-.cases-resp-body .j-n { color: #0e7c74; }
-.cases-resp-body .j-b { color: #7c3aed; }
-.cases-resp-body .j-p { color: #9aa6b8; }
+.cases-resp-body .j-k, .xv-pre .j-k { color: #2f6bb5; }
+.cases-resp-body .j-s, .xv-pre .j-s { color: #a3620f; }
+.cases-resp-body .j-n, .xv-pre .j-n { color: #0e7c74; }
+.cases-resp-body .j-b, .xv-pre .j-b { color: #7c3aed; }
+.cases-resp-body .j-p, .xv-pre .j-p { color: #9aa6b8; }
 .cases-resp-body pre.resp-err { color: var(--red); }
 .cases-resp-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .cases-resp-table th { text-align: left; color: var(--text2); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--border); background: #f8fafc; position: sticky; top: 0; }
@@ -2239,6 +2410,11 @@ select.cases-env-select.has-env { color: var(--primary); border-color: #c7d2fe; 
 .cases-assert-cell > input, .cases-assert-cell > select { color: var(--text); }
 .cases-assert-cell > input:hover, .cases-assert-cell > select:hover { border-color: #dbe3ef; background: #fff; }
 .cases-assert-cell > input:focus, .cases-assert-cell > select:focus { border-color: #c7d2fe; background: #fff; box-shadow: 0 0 0 3px rgba(79,110,247,.12); outline: none; }
+/* 断言单元格里的输入框外面包了一层着色层，样式与被包住的输入框保持一致 */
+.cases-assert-cell > .cases-hl1 { flex: 1; min-width: 0; }
+.cases-assert-cell > .cases-hl1 > input { width: 100%; height: 30px; min-width: 0; padding: 0 6px; border: 1px solid transparent; background: transparent; border-radius: 6px; font-size: inherit; color: var(--text); }
+.cases-assert-cell > .cases-hl1 > input:hover { border-color: #dbe3ef; background: #fff; }
+.cases-assert-cell > .cases-hl1 > input:focus { border-color: #c7d2fe; background: #fff; box-shadow: 0 0 0 3px rgba(79,110,247,.12); outline: none; }
 .cases-assert-del { border: none; background: transparent; color: #a9b4c6; cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 5px; line-height: 1; }
 .cases-assert-del:hover { color: var(--red); background: #fee2e2; }
 .cases-assert-empty { font-size: 12.5px; color: var(--text3); padding: 10px 2px; }
@@ -2287,6 +2463,18 @@ select.cases-env-select.has-env { color: var(--primary); border-color: #c7d2fe; 
 .cases-curl-msg.err { color: var(--red); }
 .cases-curl-msg.warn { color: #b45309; }
 .cases-curl-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: #fafbfe; }
+/* 提取变量完整值浮层：[N项] 的数组点「全部」在这里看整段 JSON（复用 curl 弹窗外壳） */
+.xv-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 10060; justify-content: center; align-items: center; }
+.xv-overlay.open { display: flex; }
+.cases-curl-modal.xv-modal { width: 760px; max-width: 94vw; max-height: 74vh; display: flex; flex-direction: column; }
+.xv-modal .cases-curl-body { flex: 1; min-height: 0; overflow: auto; }
+.xv-pre { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; color: #37455c; }
+.xv-meta { margin-right: auto; font-size: 12px; color: var(--text3); }
+/* 值列：项数胶囊 + 前几项预览 + 「全部 ▸」链接 */
+.xv-cnt { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 4px; background: #eef2ff; color: var(--primary); font-size: .92em; font-weight: 600; white-space: nowrap; }
+.xv-prev { color: var(--text2); }
+.xv-more { margin-left: 8px; padding: 0; border: none; background: transparent; color: var(--primary); font-size: .92em; cursor: pointer; white-space: nowrap; }
+.xv-more:hover { text-decoration: underline; }
 /* ═══════════════════════════════════════════════════════
    变量管理：环境变量（每个环境一套变量）；接口「代码」分区
    ═══════════════════════════════════════════════════════ */
@@ -2466,6 +2654,7 @@ input.vars-title-input[readonly]:hover { background: transparent; }
 .cases-kv-table input[type=text],
 .cases-assert-cell > select,
 .cases-assert-cell > input,
+.cases-assert-cell > .cases-hl1 > input,
 .vars-table input[type=text],
 .dbx-def-grid .dbx-input,
 .asrt-mono {
@@ -2479,6 +2668,19 @@ input.vars-title-input[readonly]:hover { background: transparent; }
 .asrt-c-idx {
   color: var(--text3);
   font-size: var(--tbl-fs);
+}
+/* 数据库工作台表格字号：上方统一规则给 th/td 都上了 --tbl-fs，
+   这里单独接管成 --db-fs（设置 → 外观 → 数据库字号），只影响数据库模块 */
+.dbx-grid th,
+.dbx-grid td,
+.dbx-grid th.dbx-rownum,
+.dbx-grid td.dbx-rownum,
+.dbx-def-grid th,
+.dbx-def-grid td,
+.dbx-def-grid td.ty,
+.dbx-def-grid td.dbx-rownum,
+.dbx-def-grid .dbx-input {
+  font-size: var(--db-fs, 13px);
 }
 /* 空值/占位符统一辅助色，字号跟随单元格 */
 .cases-assert-blank,
@@ -2714,7 +2916,7 @@ input.vars-title-input[readonly]:hover { background: transparent; }
           <!-- 请求栏：方法 + URL + 发送（Postman 式） -->
           <div class="cases-reqbar">
             <select id="cases-step-method" onchange="casesMethodChange()" title="请求方法"></select>
-            <input type="text" id="cases-step-url" placeholder="输入请求 URL，如 https://api.example.com/login" oninput="casesDirty()">
+            <span class="cases-hl1"><span class="cases-hl1-bg" aria-hidden="true"></span><input type="text" id="cases-step-url" placeholder="输入请求 URL，如 https://api.example.com/login" oninput="casesDirty()"></span>
             <button class="cases-send-btn" id="cases-send-btn" onclick="casesSend()">发送</button>
           </div>
           <!-- 分区 Tab（Postman 式） -->
@@ -2791,7 +2993,7 @@ input.vars-title-input[readonly]:hover { background: transparent; }
           <div id="cases-batch-progress"></div>
           <div class="cases-batch-wrap">
             <table class="cases-batch-table">
-              <thead><tr><th style="width:46px">#</th><th>接口</th><th style="width:92px">状态</th><th style="width:96px">耗时</th><th style="width:92px">断言</th><th style="width:34px"></th></tr></thead>
+              <thead><tr><th style="width:3.5em">#</th><th>接口</th><th style="width:7em">状态</th><th style="width:7.4em">耗时</th><th style="width:7em">断言</th><th style="width:2.6em"></th></tr></thead>
               <tbody id="cases-batch-body"></tbody>
             </table>
           </div>
@@ -2802,6 +3004,19 @@ input.vars-title-input[readonly]:hover { background: transparent; }
         <button class="btn" id="cases-batch-stop-btn" style="display:none" onclick="casesBatchStopRun()">停止</button>
         <button class="btn" id="cases-batch-cancel-btn" onclick="casesBatchClose()">取消</button>
         <button class="btn btn-primary" id="cases-batch-start-btn" onclick="casesBatchStart()">开始运行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提取变量的完整值（浮层）：数组变量值列显示「N 项 + 前 3 项」，点「全部」在这里看整段 JSON -->
+  <div class="xv-overlay" id="xv-overlay" onclick="if (event.target === this) xvClose()">
+    <div class="cases-curl-modal xv-modal">
+      <div class="cases-curl-head"><span id="xv-title">提取变量</span> <button class="cases-curl-close ic-btn ic-close" onclick="xvClose()"></button></div>
+      <div class="cases-curl-body"><pre class="xv-pre" id="xv-body"></pre></div>
+      <div class="cases-curl-foot">
+        <span class="xv-meta" id="xv-meta"></span>
+        <button class="btn" onclick="xvCopy()">复制</button>
+        <button class="btn btn-primary" onclick="xvClose()">关闭</button>
       </div>
     </div>
   </div>
@@ -3410,13 +3625,13 @@ body:
             style="flex-shrink:0;margin-left:auto">清空列表</button>
         </div>
         <div id="cap-flow-list" style="flex:1;min-height:0;overflow-y:auto">
-          <div style="text-align:center;color:var(--text3);font-size:13px;padding:40px 0">未开启流量记录</div>
+          <div style="text-align:center;color:var(--text3);font-size:calc(var(--cap-fs, 12.5px) * 1.04);padding:40px 0">未开启流量记录</div>
         </div>
       </div>
       <div class="split-v" id="cap-split-v" title="拖动调整列表 / 详情宽度，双击恢复默认"></div>
       <div class="card" id="cap-detail-card" style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div class="card-head"><h3>请求详情</h3><button class="btn btn-sm" id="cap-rp-open-btn" style="display:none;flex-shrink:0" onclick="capReplayOpen()">🔁 重放</button><button class="btn btn-sm" id="cap-mock-edit-btn" style="display:none;flex-shrink:0" onclick="capMockEditOpen()">⚡ 设置 Mock 返回</button><button class="btn btn-sm" id="cap-curl-btn" style="display:none;flex-shrink:0" onclick="capCopyCurl()">📋 复制 cURL</button><button class="btn btn-sm" id="cap-copy-har-btn" style="display:none;flex-shrink:0" onclick="capCopyHar()">📋 复制 HAR</button></div>
-        <div id="cap-detail" style="flex:1;min-height:0;display:flex;flex-direction:column;font-size:12px;color:var(--text3)"><div style="padding:20px 12px;text-align:center">点击左侧任一条流量，查看请求与响应详情</div></div>
+        <div id="cap-detail" style="flex:1;min-height:0;display:flex;flex-direction:column;font-size:var(--cap-fs, 12.5px);color:var(--text3)"><div style="padding:20px 12px;text-align:center">点击左侧任一条流量，查看请求与响应详情</div></div>
       </div>
     </div>
 
@@ -3655,20 +3870,6 @@ body:
           <button class="btn" onclick="viewPacContent()" title="在线查看 PAC 内容">查看 PAC</button>
           <button class="btn btn-soft" onclick="refreshPac()" title="强制刷新 PAC，按当前映射重新生成">🔄 刷新 PAC</button>
         </div>
-        <!-- 使用方式说明 -->
-        <div style="background:var(--bg);border-radius:6px;padding:12px;margin-bottom:12px;font-size:12px;color:var(--text2)">
-          <strong style="color:var(--text)">使用方式：</strong>
-          <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
-            <div><strong>方式一：直接访问代理 URL</strong><br>
-              在浏览器或请求工具中访问 <code style="background:#fff;padding:2px 6px;border-radius:4px">http://127.0.0.1:5050/remote/&lt;协议&gt;/&lt;主机&gt;/&lt;路径&gt;</code><br>
-              <span style="color:var(--text3)">示例：访问 https://api.example.com/user/info → 改为访问 http://127.0.0.1:5050/remote/https/api.example.com/user/info</span>
-            </div>
-            <div><strong>方式二：开启系统代理（推荐）</strong><br>
-              点击上方「系统代理」开关，浏览器访问真实域名时会自动经过本服务，无需修改请求地址<br>
-              <span style="color:var(--text3)">仅已启用的远程映射域名走代理，其他流量直连，不影响正常上网</span>
-            </div>
-          </div>
-        </div>
         <!-- CA 证书（与抓包共用同一证书） -->
         <div style="display:flex;align-items:center;justify-content:space-between;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 14px;margin-bottom:12px">
           <div style="font-size:12px;color:#166534">
@@ -3794,7 +3995,7 @@ body:
               <button class="danger" id="sqlq-mi-del" onclick="dbxMenuCloseAll();sqlFileDelete()">删除文件</button>
             </div>
           </span>
-          <span class="dbx-hint" id="sqlq-file-state">草稿</span>
+          <span class="dbx-file-state is-idle" id="sqlq-file-state"></span>
         </div>
       </div>
       <div class="dbx-layout">
@@ -3903,8 +4104,9 @@ body:
               <div class="dbx-data-top">
                 <div class="dbx-data-bar">
                   <span class="dbx-ac-wrap">
-                    <input class="dbx-input" id="dbx-data-where" autocomplete="off" placeholder="输入条件，如 status = 1"
-                      oninput="dbxWhereAc(this)" onfocus="dbxWhereAc(this, true)" onkeydown="return dbxWhereKey(event)" onblur="dbxAcHide(true)">
+                    <div class="dbx-where-hl" id="dbx-data-where-hl" aria-hidden="true"></div>
+                    <input class="dbx-input" id="dbx-data-where" autocomplete="off" placeholder="输入条件，如 status = 1、name is not null"
+                      oninput="dbxWhereHl();dbxWhereAc(this)" onfocus="dbxWhereHl();dbxWhereAc(this, true)" onkeydown="return dbxWhereKey(event)" onmousedown="dbxWhereHl()" onmouseup="dbxWhereHl()" onscroll="dbxWhereHl()" onblur="dbxAcHide(true)">
                     <div class="dbx-ac" id="dbx-ac"></div>
                   </span>
                   <button class="btn btn-primary btn-sm" onclick="dbxDataQuery()">查询</button>
@@ -3967,16 +4169,19 @@ body:
             <div class="dbx-tabbody" id="dbx-tab-sql">
               <!-- 页一：写 SQL，编辑器吃满整页 -->
               <div class="dbx-sqlpage on" id="dbx-sqlpage-editor">
+                <div class="dbx-sql-top">
+                  <span class="dbx-sql-meta" id="dbx-sql-meta"></span>
+                  <select class="dbx-select dbx-tpl-table" id="dbx-tpl-table" onchange="dbxTplTablePick(this.value)" title="先选一张表，常用语句按这张表生成"></select>
+                  <select class="dbx-select dbx-tpl" id="dbx-tpl" onchange="dbxUseTpl(this.value)" title="按左侧表选择器里的表生成常用语句，选中后写入编辑器"></select>
+                  <button class="btn btn-ghost btn-sm" onclick="dbxFormatSql()" title="格式化 SQL：多条语句按分号拆开、各占一段">格式化</button>
+                  <button class="dbx-runall" id="dbx-run-all" onclick="dbxRun()" title="执行编辑器里的全部语句（同 Ctrl+Enter）；只跑某一条就点语句行首的三角"><span class="ic"></span><span id="dbx-run-all-txt">执行全部</span></button>
+                </div>
                 <div class="dbx-sql-box" id="dbx-sql-box">
                 <pre class="dbx-sql-hl" id="dbx-sql-hl" aria-hidden="true"></pre>
                 <textarea id="dbx-sql" spellcheck="false" autocomplete="off" placeholder='输入 SQL，例如：SELECT * FROM "用户" LIMIT 50' oninput="dbxSqlInput()" onkeydown="dbxSqlKey(event)" onkeyup="dbxUpdateRunBtn()" onmouseup="dbxUpdateRunBtn()" onselect="dbxUpdateRunBtn()" onscroll="dbxAcReposition();dbxSqlHlScroll()" onfocus="dbxSqlHlInit()" onmousedown="dbxSqlUserCaret()" onblur="dbxAcClose()"></textarea>
                 <div class="dbx-sql-ac" id="dbx-sql-ac" style="display:none"></div>
                 </div>
                 <div class="dbx-actions">
-                <select class="dbx-select dbx-tpl-table" id="dbx-tpl-table" onchange="dbxTplTablePick(this.value)" title="先选一张表，常用语句按这张表生成"></select>
-                <select class="dbx-select dbx-tpl" id="dbx-tpl" onchange="dbxUseTpl(this.value)" title="按左侧表选择器里的表生成常用语句，选中后写入编辑器"></select>
-                <button class="btn btn-primary btn-sm" id="dbx-run-btn" onclick="dbxRun()" title="执行全部语句；先在编辑器里选中一段 SQL 可只执行选中部分">执行</button>
-                <button class="btn btn-ghost btn-sm" onclick="dbxFormatSql()">格式化</button>
                 <span class="dbx-hint" id="dbx-hint">Ctrl+Enter 执行 · Ctrl+/ 注释 · 选中部分可单独执行</span>
                 <button class="btn btn-danger-ghost btn-sm" style="margin-left:auto" onclick="dbxClear()">清空</button>
                 </div>
@@ -3985,7 +4190,7 @@ body:
               <div class="dbx-sqlpage" id="dbx-sqlpage-result">
                 <div class="dbx-rs-bar" id="dbx-rs-bar"></div>
               <div class="dbx-data-bar dbx-edit-bar" id="dbx-rs-tools" style="display:none">
-                <button class="dbx-mini" onclick="dbxRsReload()" title="按编辑区的 SQL 重新执行一次">刷新</button>
+                <button class="dbx-mini" id="dbx-rs-reload-btn" onclick="dbxRsReload()" title="只重新查询当前结果集对应的这一条语句，不会重跑编辑器里的整段 SQL">刷新</button>
                 <button class="dbx-mini" id="dbx-rs-copy-btn" onclick="dbxRsCopySelection()" disabled title="复制框选的单元格或选中的行（TSV，可直接粘贴到 Excel），快捷键 Ctrl+C">复制内容</button>
                 <button class="dbx-mini" id="dbx-rs-copyrow-btn" onclick="dbxRsCopyRowsSel()" disabled title="把选中的行复制出来（含表头）">复制选中行</button>
                 <span class="dbx-edit-sep"></span>
@@ -13833,6 +14038,7 @@ function casesRenderSec() {
   casesHlBind();
   casesHlRefresh();
   casesScriptHlRefresh();
+  casesHl1Refresh();   // 含请求栏 URL（不在 #cases-form 里）
   casesVarLineSchedule();
 }
 
@@ -13908,7 +14114,8 @@ function _casesVarLocalDefs() {
     });
   });
   var fi = document.getElementById('cases-adv-foreach-item');
-  if (fi) { var v = String(fi.value || '').trim(); if (v) out.push(v); }
+  // 高级页的数据驱动注入名同样支持逗号分隔多值，拆开逐个算作已定义
+  if (fi) String(fi.value || '').split(',').forEach(function(nm) { nm = nm.trim(); if (nm) out.push(nm); });
   return out;
 }
 
@@ -13956,7 +14163,11 @@ async function _casesKnownVarMap() {
     });
     var fo = s.foreach;
     var item = (fo && typeof fo === 'object' && fo.item) ? String(fo.item) : '';
-    if (item) map[item] = { kind: 'extract', from: from };
+    // item 可以是逗号分隔的多个注入名（多数据源配对），逐个登记，否则 ${slide.title} 会被误判未定义
+    item.split(',').forEach(function(nm) {
+      nm = nm.trim();
+      if (nm) map[nm] = { kind: 'extract', from: from };
+    });
   }
   ((_casesDoc && _casesDoc.steps) || []).forEach(addStep);
   // 当前编辑区里可能还没保存的定义
@@ -13968,15 +14179,19 @@ async function _casesKnownVarMap() {
 
 async function casesVarLineRefresh() {
   document.querySelectorAll('#panel-cases .cases-var-bad').forEach(function(x) { x.classList.remove('cases-var-bad'); });
-  if (!_casesDoc) { _casesHlMap = null; casesHlRefresh(); return; }
+  if (!_casesDoc) { _casesHlMap = null; casesHlRefresh(); casesHl1Refresh(); return; }
   var refs = _casesVarRefs();
   var tok = ++_casesVarToken;
   var map = await _casesKnownVarMap();
   if (tok !== _casesVarToken) return;  // 已有更新的输入，丢弃这次结果
   _casesHlMap = map;                    // 给 Body 输入框的高亮层用
-  refs.forEach(function(r) { if (!map[r.base] && r.el) r.el.classList.add('cases-var-bad'); });
+  refs.forEach(function(r) {
+    // 已能着色的输入框（参数/Headers/URL 等）用红字提示未定义，不再叠一圈红边
+    if (!map[r.base] && r.el && !(r.el.closest && r.el.closest('.cases-hl1'))) r.el.classList.add('cases-var-bad');
+  });
   _casesRenderRefHint(refs, map);
   casesHlRefresh();
+  casesHl1Refresh();
 }
 
 // 请求栏下方的「取值来源」：同名只算优先级最高的那个，所以一个名字只会出现在一组里
@@ -14375,18 +14590,18 @@ function casesAssertRowsList(rows) {
     var blank = '<span class="cases-assert-blank">—</span>';
     var condHtml, expHtml;
     if (type === 'json_path') {
-      condHtml = '<input type="text" placeholder="JSON 路径，如 data.code" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>';
-      expHtml = '<input type="text" placeholder="期望值，如 0" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>';
+      condHtml = _casesHl1Wrap('<input type="text" placeholder="JSON 路径，如 data.code" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>');
+      expHtml = _casesHl1Wrap('<input type="text" placeholder="期望值，如 0" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>');
     } else if (type === 'header_contains') {
-      condHtml = '<input type="text" placeholder="响应头名，如 Content-Type" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>';
-      expHtml = '<input type="text" placeholder="期望包含的文本" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>';
+      condHtml = _casesHl1Wrap('<input type="text" placeholder="响应头名，如 Content-Type" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>');
+      expHtml = _casesHl1Wrap('<input type="text" placeholder="期望包含的文本" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>');
     } else if (type === 'json_path_exists') {
-      condHtml = '<input type="text" placeholder="JSON 路径，如 data.token" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>';
+      condHtml = _casesHl1Wrap('<input type="text" placeholder="JSON 路径，如 data.token" value="' + escHtml(k) + '" oninput="casesDirty()" data-k>');
       expHtml = blank;
     } else {
       var ph = type === 'status_code' ? '期望状态码，如 200' : (type === 'response_time' ? '毫秒上限，如 1000' : '期望文本');
       condHtml = blank;
-      expHtml = '<input type="text" placeholder="' + ph + '" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>';
+      expHtml = _casesHl1Wrap('<input type="text" placeholder="' + ph + '" value="' + escHtml(v) + '" oninput="casesDirty()" data-v>');
     }
     return '<div class="cases-assert-tr cases-assert-row">' +
       cell('idx', '<span class="cases-assert-idx">' + (i + 1) + '</span>') +
@@ -14645,8 +14860,9 @@ function casesKvTableRows(rows, keyPh, valPh, pick) {
 
 function casesKvTrHtml(k, v, keyPh, valPh, pick) {
   var isHeader = pick === 'header';
-  var keyInp = '<input type="text"' + (isHeader ? ' class="has-pick"' : '') + ' placeholder="' + escHtml(keyPh) + '" value="' + escHtml(String(k == null ? '' : k)) + '" oninput="casesDirty();casesKvMaybeAppend(this)" data-key' + (isHeader ? ' data-pick="header"' : '') + '>';
-  var valInp = '<input type="text"' + (isHeader ? ' class="has-pick"' : '') + ' placeholder="' + escHtml(valPh) + '" value="' + escHtml(String(v == null ? '' : v)) + '" oninput="casesDirty();casesKvMaybeAppend(this)" data-val' + (isHeader ? ' data-pick="header"' : '') + '>';
+  // 键/值外各包一层着色层：${变量} 按 Body 那套配色显示（输入框文字转透明）
+  var keyInp = _casesHl1Wrap('<input type="text"' + (isHeader ? ' class="has-pick"' : '') + ' placeholder="' + escHtml(keyPh) + '" value="' + escHtml(String(k == null ? '' : k)) + '" oninput="casesDirty();casesKvMaybeAppend(this)" data-key' + (isHeader ? ' data-pick="header"' : '') + '>');
+  var valInp = _casesHl1Wrap('<input type="text"' + (isHeader ? ' class="has-pick"' : '') + ' placeholder="' + escHtml(valPh) + '" value="' + escHtml(String(v == null ? '' : v)) + '" oninput="casesDirty();casesKvMaybeAppend(this)" data-val' + (isHeader ? ' data-pick="header"' : '') + '>');
   if (isHeader) {
     keyInp = '<div class="kv-pick-wrap">' + keyInp + '<button type="button" class="kv-pick-btn" title="选择常用 Header" onclick="kvPickOpen(this, \'key\')">▾</button></div>';
     valInp = '<div class="kv-pick-wrap">' + valInp + '<button type="button" class="kv-pick-btn" title="选择常用值" onclick="kvPickOpen(this, \'val\')">▾</button></div>';
@@ -14667,7 +14883,7 @@ function casesKvMaybeAppend(inp) {
   var tmp = document.createElement('tbody');
   tmp.innerHTML = casesKvTrHtml('', '', k ? k.placeholder : 'Key', v ? v.placeholder : 'Value', (k && k.dataset.pick) || '');
   var row = tmp.firstElementChild;
-  if (row) tr.parentNode.appendChild(row);
+  if (row) { tr.parentNode.appendChild(row); casesHl1Refresh(row.parentNode); }
 }
 
 function casesKvAdd(id) {
@@ -14683,6 +14899,7 @@ function casesKvAdd(id) {
   box.appendChild(row);
   var k = row.querySelector('[data-key]');
   if (k) k.focus();
+  casesHl1Refresh(box);
   casesDirty();
 }
 
@@ -14716,9 +14933,9 @@ function casesReadKvRows(id) {
   return out;
 }
 
-/* ===== 代码区字号（请求 Body / 响应 Body 各自记忆） ===== */
+/* ===== 代码区字号（请求 Body / 响应 Body / 批量运行结果 / 抓包页 / 数据库工作台各自记忆） ===== */
 var _CASES_FS_KEY = 'apiTester.codeFontSize';
-var _CASES_FS_DEF = { req: 13, resp: 12.5 };   // 与 CSS 默认值保持一致
+var _CASES_FS_DEF = { req: 13, resp: 12.5, batch: 13, cap: 12.5, db: 13 };   // 与 CSS 默认值保持一致
 var _CASES_FS_MIN = 10, _CASES_FS_MAX = 24;
 
 function _casesFsClamp(kind, v) {
@@ -14728,12 +14945,15 @@ function _casesFsClamp(kind, v) {
 }
 
 var _casesFontSizes = (function() {
-  var out = { req: _CASES_FS_DEF.req, resp: _CASES_FS_DEF.resp };
+  var out = { req: _CASES_FS_DEF.req, resp: _CASES_FS_DEF.resp, batch: _CASES_FS_DEF.batch, cap: _CASES_FS_DEF.cap, db: _CASES_FS_DEF.db };
   try {
     var raw = JSON.parse(localStorage.getItem(_CASES_FS_KEY) || '{}') || {};
     if (raw && typeof raw === 'object') {
       if (raw.req != null) out.req = _casesFsClamp('req', raw.req);
       if (raw.resp != null) out.resp = _casesFsClamp('resp', raw.resp);
+      if (raw.batch != null) out.batch = _casesFsClamp('batch', raw.batch);
+      if (raw.cap != null) out.cap = _casesFsClamp('cap', raw.cap);
+      if (raw.db != null) out.db = _casesFsClamp('db', raw.db);
     }
   } catch (e) {}
   return out;
@@ -14748,20 +14968,26 @@ function casesFontApply() {
   var st = document.documentElement.style;
   st.setProperty('--req-code-fs', _casesFsFmt('req'));
   st.setProperty('--resp-code-fs', _casesFsFmt('resp'));
+  st.setProperty('--batch-fs', _casesFsFmt('batch'));
+  st.setProperty('--cap-fs', _casesFsFmt('cap'));
+  st.setProperty('--db-fs', _casesFsFmt('db'));
   // 不往设置面板的输入框回写：用户正在输入时会被打断，打开设置时由 settingsFontSync 同步
   // 高亮层与 textarea 同字号，字号变了要重画一层，避免错位
   casesHlRefresh();
+  casesHl1Refresh();
+  // SQL 编辑器也是「透明 textarea + 高亮层」，字变大后行高变了，滚动位置要重新对齐
+  if (typeof dbxSqlHlScroll === 'function') dbxSqlHlScroll();
 }
 
 function casesFontSet(kind, v) {
-  if (kind !== 'req' && kind !== 'resp') return;
+  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db') return;
   _casesFontSizes[kind] = _casesFsClamp(kind, v);
   try { localStorage.setItem(_CASES_FS_KEY, JSON.stringify(_casesFontSizes)); } catch (e) {}
   casesFontApply();
 }
 
 function casesFontStep(kind, delta) {
-  if (kind !== 'req' && kind !== 'resp') return;
+  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db') return;
   var cur = _casesFontSizes[kind];
   if (cur == null) cur = _CASES_FS_DEF[kind];
   casesFontSet(kind, cur + delta);
@@ -14891,6 +15117,85 @@ function casesHlBind() {
     var w = ta.closest('.cases-hl-wrap');
     if (w) w.classList.remove('ime');
     casesHlRefresh();
+  });
+}
+
+/* ===== 单行输入框内 ${变量} 实时着色（URL / 参数 / Headers / 表单键值 / 断言） =====
+   与 Body 的 textarea 高亮同一套配色：提取=蓝、变量=绿、数据集合=橙、未定义=红。
+   做法：输入框外包一层 .cases-hl1，彩色文字画在 .cases-hl1-bg 覆盖层上，
+   输入框自身文字转透明只留光标，这样单行输入框也能多色。 */
+function _casesHl1Wrap(html) {
+  return '<span class="cases-hl1"><span class="cases-hl1-bg" aria-hidden="true"></span>' + html + '</span>';
+}
+
+function _casesHl1Html(v) {
+  var s = String(v == null ? '' : v);
+  var html = '', last = 0, m;
+  var re = /\$\{([^{}]+)\}/g;
+  while ((m = re.exec(s))) {
+    html += escHtml(s.slice(last, m.index));
+    html += '<span class="' + _casesHlClass(String(m[1]).trim()) + '">' + escHtml(m[0]) + '</span>';
+    last = m.index + m[0].length;
+  }
+  return html + escHtml(s.slice(last));
+}
+
+// 把输入框的文字画到覆盖层：字体/内边距/行高按输入框实测值镜像，横向滚动位置同步
+function casesHl1Paint(w) {
+  if (!w) return;
+  var inp = w.querySelector('input');
+  var bg = w.querySelector('.cases-hl1-bg');
+  if (!inp || !bg) return;
+  var v = inp.value || '';
+  var on = !!_casesHlMap && v.indexOf('${') >= 0;
+  w.classList.toggle('hl1-on', on);
+  if (!on) { if (bg.innerHTML) bg.innerHTML = ''; return; }
+  var cs = window.getComputedStyle(inp);
+  var n = function(x) { var f = parseFloat(x); return isFinite(f) ? f : 0; };
+  var st = bg.style;
+  st.fontFamily = cs.fontFamily;
+  st.fontSize = cs.fontSize;
+  st.fontWeight = cs.fontWeight;
+  st.fontStyle = cs.fontStyle;
+  st.letterSpacing = cs.letterSpacing;
+  st.textAlign = cs.textAlign;
+  st.paddingLeft = (n(cs.paddingLeft) + n(cs.borderLeftWidth)) + 'px';
+  st.paddingRight = (n(cs.paddingRight) + n(cs.borderRightWidth)) + 'px';
+  st.paddingTop = '0px';
+  st.paddingBottom = '0px';
+  var h = inp.clientHeight - n(cs.borderTopWidth) - n(cs.borderBottomWidth);
+  st.lineHeight = (h > 0 ? h : 18) + 'px';
+  bg.innerHTML = _casesHl1Html(v);
+  bg.scrollLeft = inp.scrollLeft;
+}
+
+function casesHl1Bind(inp) {
+  if (!inp || inp.dataset.hl1Bound === '1') return;
+  inp.dataset.hl1Bound = '1';
+  inp.addEventListener('scroll', function() {
+    var w = inp.closest('.cases-hl1');
+    var bg = w && w.querySelector('.cases-hl1-bg');
+    if (bg) bg.scrollLeft = inp.scrollLeft;
+  });
+  // 边打边画：不等 200ms 的变量表刷新，先按上一版配色出字，刷新后自动改色
+  inp.addEventListener('input', function() { casesHl1Paint(inp.closest('.cases-hl1')); });
+  // 中文输入法合成期间文字必须由输入框自己显示（覆盖层藏起来）
+  inp.addEventListener('compositionstart', function() {
+    var w = inp.closest('.cases-hl1');
+    if (w) w.classList.add('hl1-ime');
+  });
+  inp.addEventListener('compositionend', function() {
+    var w = inp.closest('.cases-hl1');
+    if (w) { w.classList.remove('hl1-ime'); casesHl1Paint(w); }
+  });
+}
+
+function casesHl1Refresh(root) {
+  var box = root || document;
+  if (!box || !box.querySelectorAll) return;
+  box.querySelectorAll('.cases-hl1').forEach(function(w) {
+    w.querySelectorAll('input').forEach(function(inp) { casesHl1Bind(inp); });
+    casesHl1Paint(w);
   });
 }
 
@@ -15643,16 +15948,7 @@ function _casesAssertPanelHtml(d) {
   var ext = d.extracted || [];
   if (ext.length) {
     parts.push('<div class="asrt-sub">提取变量</div>');
-    parts.push('<div class="asrt-wrap" style="margin-top:6px"><table class="asrt-table">' +
-      '<thead><tr><th style="width:220px">变量</th><th>值</th></tr></thead><tbody>' +
-      ext.map(function(x) {
-        var raw = _casesStripAnsi(x).replace(/^\s*\[(OK|FAIL|WARN)\]\s*/, '');
-        var m = raw.match(/^\$\{(.+?)\}=(.*)$/);
-        var name = m ? '${' + m[1] + '}' : raw;
-        var val = m ? m[2] : '';
-        return '<tr><td class="asrt-mono">' + escHtml(name) + '</td><td>' + _asrtCell(val) + '</td></tr>';
-      }).join('') +
-      '</tbody></table></div>');
+    parts.push(_casesVarTable(_extractRows(ext, d.extract_detail)));
   }
   return parts.join('');
 }
@@ -16106,80 +16402,187 @@ function _casesBatchRowHtml(n, r) {
       _casesBatchDetailHtml(r) + '</div></td></tr>';
 }
 
+// 详情表：一张两列表。items 里 { sec: '请求' } 是整行分组标题，[标签, 内容, 附加类名?] 是数据行；
+// 内容为空的行跳过，分组里一条数据都没有时标题也不单独占一行
+function _casesBatchKv(items) {
+  var out = [];
+  var sec = null;
+  (items || []).forEach(function(x) {
+    if (!x) return;
+    if (x.sec) { sec = x.sec; return; }
+    if (x[1] === '' || x[1] == null) return;
+    if (sec) {
+      out.push('<tr class="kv-sec"><th colspan="2">' + escHtml(sec) + '</th></tr>');
+      sec = null;
+    }
+    out.push('<tr><th' + (x[2] ? ' class="' + x[2] + '"' : '') + '>' + x[0] + '</th><td>' + x[1] + '</td></tr>');
+  });
+  return out.length ? '<div class="db-kv-wrap"><table class="db-kv"><colgroup><col class="kv-col-k"><col></colgroup>' + out.join('') + '</table></div>' : '';
+}
+
+// 请求/响应头：一条一行 key: value，长值自己折行
+function _casesBatchHdLines(obj) {
+  return Object.keys(obj).map(function(k) {
+    return '<div class="kv-hd"><b>' + escHtml(k) + '</b>: ' + escHtml(String(obj[k] == null ? '' : obj[k])) + '</div>';
+  }).join('');
+}
+
+// 参数这类「名称 + 值」成组数据：不拼成 k=v& k=v 一行字符串，
+// 改成 名称列（按内容自适应、不折行）+ 值列（吃满剩余宽度）的内嵌小表
+function _casesBatchSubTable(rows) {
+  return '<table class="kv-sub"><colgroup><col style="width:1%"><col></colgroup><tbody>' +
+    (rows || []).map(function(r) {
+      return '<tr><th>' + escHtml(String(r[0] == null ? '' : r[0])) + '</th><td>' +
+        escHtml(String(r[1] == null ? '' : r[1])) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+// 提取结果解析：`${name}=值` → [变量名, 值, 明细]。明细只对 extract_list 的数组有，
+// 用来把「[N项]」变成「前 3 项预览 + 全部」；单值仍是后端截断后的 50 字
+function _extractRows(extracted, detail) {
+  var det = detail || {};
+  return (extracted || []).map(function(x) {
+    var s = _casesStripAnsi(String(x)).replace(/^\s*\[(OK|FAIL|WARN)\]\s*/, '');
+    var i = s.indexOf('=');
+    var name = i > 0 ? s.slice(0, i) : s;
+    var val = i > 0 ? s.slice(i + 1) : '';
+    var key = name.replace(/^\$\{/, '').replace(/\}$/, '');
+    return [name, val, det[key]];
+  });
+}
+
+// 数组元素的一小段摘要：对象取前 2 个键值写成 {k: "v", …}，嵌套结构用 [...]/{…} 代指，
+// 字符串带引号，数字布尔原样——比直接截断 JSON 更好认，也不会截在半个键名上
+function _xvBrief(v, n) {
+  if (Array.isArray(v)) return '[' + v.length + ' 项]';
+  if (v && typeof v === 'object') {
+    var keys = Object.keys(v);
+    var body = keys.slice(0, 2).map(function(k) {
+      var t = v[k];
+      var s = typeof t === 'string' ? '"' + t + '"'
+        : (t && typeof t === 'object' ? (Array.isArray(t) ? '[' + t.length + ' 项]' : '{…}') : String(t));
+      return k + ': ' + (s.length > 24 ? s.slice(0, 24) + '…' : s);
+    }).join(', ');
+    return '{' + body + (keys.length > 2 ? ', …' : '') + '}';
+  }
+  var t2 = typeof v === 'string' ? '"' + v + '"' : String(v);
+  return t2.length > n ? t2.slice(0, n) + '…' : t2;
+}
+
+// 「变量 | 值」表：单接口运行结果与批量运行详情共用这一张，值列的数组显示前 3 项 + 「全部」
+function _casesVarTable(rows) {
+  return '<div class="asrt-wrap" style="margin-top:6px"><table class="asrt-table">' +
+    '<thead><tr><th style="width:220px">变量</th><th>值</th></tr></thead><tbody>' +
+    (rows || []).map(function(x) {
+      return '<tr><td class="asrt-mono">' + escHtml(String(x[0] == null ? '' : x[0])) + '</td><td>' +
+        _xvCell(x[1], x[2]) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+// 值列内容：有数组明细就「N 项 + 前 3 项预览 + 全部 ▸」，否则退回原来的等宽文本
+function _xvCell(val, d) {
+  if (!d || d.type !== 'list') return _asrtCell(String(val == null ? '' : val));
+  var items = d.items || [];
+  var count = d.count != null ? d.count : items.length;
+  if (!items.length) return '<span class="asrt-muted">空数组（0 项）</span>';
+  var prev = items.slice(0, 3).map(function(it) { return _xvBrief(it, 40); }).join('、');
+  return '<span class="xv-cnt">' + escHtml(String(count)) + ' 项</span>' +
+    '<span class="xv-prev">' + escHtml(prev) + (count > 3 ? ' …' : '') + '</span>' +
+    '<button type="button" class="xv-more" data-count="' + escHtml(String(count)) + '"' +
+      ' data-trunc="' + (d.truncated ? '1' : '0') + '" onclick="xvOpen(this)">全部 ▸</button>' +
+    // 完整值藏在这里，点「全部」时读出来丢进浮层，不用额外维护全局缓存
+    '<span class="xv-data" hidden>' + escHtml(JSON.stringify(items)) + '</span>';
+}
+
+// 点「全部 ▸」：把藏在 td 里的完整数组丢进浮层，JSON 上色与复制复用现成工具
+var _xvCopyText = '';
+function xvOpen(btn) {
+  var td = btn.closest ? btn.closest('td') : btn.parentNode;
+  var tr = td && td.parentNode;
+  var nameTd = tr && tr.querySelector('td');
+  var dataEl = td && td.querySelector('.xv-data');
+  if (!dataEl) return;
+  var items = [];
+  try { items = JSON.parse(dataEl.textContent || '[]'); } catch (e) { items = []; }
+  var count = parseInt(btn.getAttribute('data-count') || '0', 10) || items.length;
+  var trunc = btn.getAttribute('data-trunc') === '1';
+  var text = JSON.stringify(items, null, 2);
+  _xvCopyText = text;
+  document.getElementById('xv-title').textContent =
+    '提取变量 ' + (nameTd ? nameTd.textContent.trim() : '');
+  document.getElementById('xv-body').innerHTML = _casesRespHl(text).html;
+  document.getElementById('xv-meta').textContent = '数组 · 共 ' + count + ' 项' +
+    (trunc ? '（为保证流畅只回传前 ' + items.length + ' 项）' : '');
+  document.getElementById('xv-overlay').classList.add('open');
+}
+function xvClose() {
+  var o = document.getElementById('xv-overlay');
+  if (o) o.classList.remove('open');
+  _xvCopyText = '';
+}
+function xvCopy() {
+  _safeCopyText(_xvCopyText).then(function() { showToast('已复制'); });
+}
+
 function _casesBatchDetailHtml(r) {
-  var h = '';
+  var items = [];
   // ── 请求：方法 + 已替换变量的 URL + 参数 + Headers + Body ──
-  var req = '<div class="db-line"><b>地址</b>' + escHtml(String(r.method || 'GET')) + ' <code>' + escHtml(String(r.url || '')) + '</code></div>';
+  items.push({ sec: '请求' });
+  items.push(['地址', '<span class="kv-m">' + escHtml(String(r.method || 'GET')) + '</span> <span class="kv-url">' + escHtml(String(r.url || '')) + '</span>']);
   var q = r.req_params;
   if (q && typeof q === 'object' && Object.keys(q).length) {
-    req += '<div class="db-line"><b>参数</b><code>' + escHtml(Object.keys(q).map(function(k) {
-      return k + '=' + (q[k] == null ? '' : q[k]);
-    }).join('& ')) + '</code></div>';
+    items.push(['参数', _casesBatchSubTable(Object.keys(q).map(function(k) {
+      return [k, q[k]];
+    }))]);
   }
   var hd = r.req_headers;
-  if (hd && typeof hd === 'object' && Object.keys(hd).length) {
-    req += '<div class="db-line"><b>Headers</b>' + Object.keys(hd).map(function(k) {
-      return '<code>' + escHtml(k + ': ' + hd[k]) + '</code>';
-    }).join(' ') + '</div>';
-  }
+  if (hd && typeof hd === 'object' && Object.keys(hd).length) items.push(['请求头', _casesBatchHdLines(hd)]);
   var lh = r.latin1_headers || [];
   if (lh.length) {
-    req += '<div class="db-line" style="color:#b45309"><b>提示</b>请求头 ' + lh.map(escHtml).join('、') +
-      ' 含中文：header 只能携带 latin-1 字符，已按 UTF-8 字节发送（线上字节正确）。服务端按 latin-1 读取时回显会像乱码（如 httpbin），按 UTF-8 解码即可还原。</div>';
+    items.push(['提示', '<span class="db-warn">请求头 ' + escHtml(lh.join('、')) +
+      ' 含中文：header 只能携带 latin-1 字符，已按 UTF-8 字节发送（线上字节正确）。服务端按 latin-1 读取时回显会像乱码（如 httpbin），按 UTF-8 解码即可还原。</span>']);
   }
+  if (r.foreach_item) items.push(['本轮数据', '<span class="kv-hd">' + escHtml(String(r.foreach_item)) + '</span>']);
   var body = r.req_body;
   if (body !== undefined && body !== null && body !== '') {
     var bt = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
-    req += '<div class="db-title" style="margin-top:6px">Body</div><pre>' + escHtml(bt) + '</pre>';
+    items.push(['请求体', '<pre>' + escHtml(bt) + '</pre>']);
   }
-  if (r.foreach_item) {
-    req += '<div class="db-line"><b>本轮数据</b><code>' + escHtml(String(r.foreach_item)) + '</code></div>';
-  }
-  h += '<div class="db-sec"><div class="db-title">请求</div>' + req + '</div>';
   // ── 响应 ──
-  var resp = '<div class="db-line"><b>状态</b>' +
-    escHtml(sc_text(r)) + (r.elapsed_ms != null ? ' · ' + escHtml(String(r.elapsed_ms)) + ' ms' : '') +
-    (r.is_mock ? ' · <span style="color:#8b5cf6">Mock</span>' : '') + '</div>';
+  items.push({ sec: '响应' });
+  items.push(['状态', escHtml(sc_text(r)) +
+    (r.elapsed_ms != null ? ' · ' + escHtml(String(r.elapsed_ms)) + ' ms' : '') +
+    (r.is_mock ? ' · <span style="color:#8b5cf6">Mock</span>' : '')]);
   // 响应头（含中文的已按原始字节还原）
   var rh = r.resp_headers;
-  if (rh && typeof rh === 'object' && Object.keys(rh).length) {
-    resp += '<div class="db-line"><b>响应头</b>' + Object.keys(rh).map(function(k) {
-      return '<code>' + escHtml(k + ': ' + rh[k]) + '</code>';
-    }).join(' ') + '</div>';
-  }
+  if (rh && typeof rh === 'object' && Object.keys(rh).length) items.push(['响应头', _casesBatchHdLines(rh)]);
   var rlh2 = r.resp_latin1_headers || [];
   if (rlh2.length) {
-    resp += '<div class="db-line" style="color:#b45309"><b>提示</b>响应头 ' + rlh2.map(escHtml).join('、') +
-      ' 含中文：服务端按 UTF-8/GBK 编码发送，已按原始字节自动还原。</div>';
+    items.push(['提示', '<span class="db-warn">响应头 ' + escHtml(rlh2.join('、')) +
+      ' 含中文：服务端按 UTF-8/GBK 编码发送，已按原始字节自动还原。</span>']);
   }
   var bodyText = String(r.response == null ? '' : r.response);
   if (r.binary_resp && !bodyText) {
-    resp += '<div class="db-line" style="color:#b45309"><b>提示</b>二进制响应（' + escHtml(String(r.resp_ct || '')) + '），不按文本解码。</div>';
+    items.push(['提示', '<span class="db-warn">二进制响应（' + escHtml(String(r.resp_ct || '')) + '），不按文本解码。</span>']);
   }
-  if (bodyText) resp += '<pre>' + escHtml(_casesBatchTrim(bodyText)) + '</pre>';
-  h += '<div class="db-sec"><div class="db-title">响应</div>' + resp + '</div>';
-  // ── 断言 ──
+  if (bodyText) items.push(['响应体', '<pre>' + escHtml(_casesBatchTrim(bodyText)) + '</pre>']);
+  var html = _casesBatchKv(items);
+  // ── 断言 / 提取变量 / 自增取号：不再挤在详情表的右列里，改成和单个接口运行结果同一套 asrt 表格 ──
   var asserts = r.asserts || [];
   if (asserts.length) {
-    h += '<div class="db-sec"><div class="db-title">断言（' + asserts.length + '）</div><div class="db-assert">' +
-      asserts.map(function(m) {
-        var bad = String(m).indexOf('[FAIL]') >= 0;
-        var text = String(m).replace(/^\s*\[(OK|FAIL|WARN)\]\s*/, '');
-        return '<div class="' + (bad ? 'db-bad' : 'db-ok') + '">' + (bad ? '✘' : '✔') + ' ' + escHtml(text) + '</div>';
-      }).join('') + '</div></div>';
+    var arows = asserts.map(_assertRowFromMsg);
+    html += _asrtSummaryHtml(arows) + _asrtTableHtml(arows);
   }
-  // ── 提取 / 自增取号 ──
   var ex = r.extracted || [];
   if (ex.length) {
-    h += '<div class="db-sec"><div class="db-title">提取的变量</div><div class="db-assert">' +
-      ex.map(function(x) { return '<div><code>' + escHtml(String(x)) + '</code></div>'; }).join('') + '</div></div>';
+    html += '<div class="asrt-sub">提取变量</div>' + _casesVarTable(_extractRows(ex, r.extract_detail));
   }
   var seq = r.seq_used || {};
   if (Object.keys(seq).length) {
-    h += '<div class="db-sec"><div class="db-title">自增取号</div><div class="db-assert">' +
-      Object.keys(seq).map(function(k) { return '<code>' + escHtml(k + '=' + seq[k]) + '</code>'; }).join(' ') + '</div></div>';
+    html += '<div class="asrt-sub">自增取号</div>' + _casesVarTable(Object.keys(seq).map(function(k) {
+      return [k, seq[k]];
+    }));
   }
-  return h;
+  return html;
 }
 function sc_text(r) {
   return (r.status_code === 'ERR' || r.status_code === undefined || r.status_code === null)
@@ -16364,12 +16767,12 @@ window.addEventListener('keydown', function(e) {
       <h3>筛选条件 <span id="dbx-fl-table" style="font-weight:400;font-size:12px;color:var(--text3)"></span></h3>
     </div>
     <div class="var-edit-body">
+      <div class="dbx-fl-sql" id="dbx-fl-sql"></div>
       <div id="dbx-fl-rows"></div>
       <div class="row" style="gap:8px;margin-top:10px">
         <button class="dbx-mini" onclick="dbxFlAdd()">+ 添加条件</button>
         <button class="dbx-mini" onclick="dbxFlClear()">清空条件</button>
       </div>
-      <div class="dbx-fl-sql" id="dbx-fl-sql"></div>
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px">
         <button class="btn btn-muted btn-sm" onclick="dbxFilterClose()">取消</button>
         <button class="btn btn-primary btn-sm" onclick="dbxFilterApply()">应用筛选</button>
@@ -17677,6 +18080,9 @@ var _dbx = { sources: [], src: null, schema: '', schemas: [], schemasError: '', 
   sqlSelByUser: false,
   // 单元格预览：记录当前在预览哪一格（{r,c}），配合 dbxPreview* 在表格下方展示完整内容
   preview: null,
+  // 刷新结果集用的执行环境快照（{id, schema}）：刷新只查当前结果集那一条语句，
+  // 用它当时连的库，而不是看编辑器现在写的是什么
+  rsOrigin: null, rsReloading: false,
   // 左侧筛选范围：all=库名+表名同时筛；db=只筛库名；tb=只筛表名
   filterScope: 'all' };
 
@@ -17705,8 +18111,31 @@ function _dbxRemember(patch) {
   try { localStorage.setItem(_DBX_LAST_KEY, JSON.stringify(st)); } catch (e) {}
 }
 
+// 生成 SQL 时决定要不要给标识符加引号的关键字表：这些名字裸写会被当成语法关键字
+var _DBX_RESERVED_SET = (function () {
+  var words = ('select from where group order by having limit offset union all distinct join left right inner ' +
+    'outer full cross natural on using as and or not in like between is null true false case when then else ' +
+    'end asc desc exists any some with values insert into update set delete create table index view trigger ' +
+    'procedure function primary key foreign references unique check constraint default drop alter truncate ' +
+    'rename replace show describe explain use status comment engine auto_increment int integer bigint ' +
+    'smallint tinyint decimal numeric float double real char varchar text blob date time datetime timestamp ' +
+    'year interval row rows rank over partition if cast convert count sum avg min max concat now dual lock ' +
+    'read write begin commit rollback').split(' ');
+  var set = {};
+  for (var i = 0; i < words.length; i++) set[words[i]] = 1;
+  return set;
+})();
+
+// 普通名字（字母/下划线/中文开头，只含字母数字 _ $ 中文）且不是保留字时裸写
+function _dbxIdentBare(s) {
+  return /^[A-Za-z_\u4e00-\u9fa5][A-Za-z0-9_$\u4e00-\u9fa5]*$/.test(s) && !_DBX_RESERVED_SET[s.toLowerCase()];
+}
+
 function _dbxQuote(name) {
   var s = String(name === null || name === undefined ? '' : name);
+  // 表名/列名绝大多数都是普通标识符，裸写就行；只有含空格、连字符、中文以外的符号，
+  // 或撞上 order / key 这类保留字时，才必须加引号（否则生成的 SQL 到处是反引号）
+  if (_dbxIdentBare(s)) return s;
   // MySQL 不认双引号标识符（除非开 ANSI_QUOTES），必须用反引号
   if (_dbx.src && _dbx.src.type === 'mysql') return '`' + s.replace(/`/g, '``') + '`';
   return '"' + s.replace(/"/g, '""') + '"';
@@ -17795,10 +18224,12 @@ function dbxSetTableHead(name) {
     dbxSqlPage(_dbx.sqlPage || 'editor', true);
   }
   if (!sqlDoc && name && _dbx.info[name]) dbxUpdateTableMeta(name);
+  dbxSqlMeta();   // 切库 / 切数据源后顶栏的库名跟着变
 }
 
 // 打开数据源级 SQL 文档：所有表共用同一个编辑器与结果区，不再一表一份
-function dbxOpenSqlDoc() {
+// page='result' 时直接停在结果页（表文档里的「查询结果」页签走这里）
+function dbxOpenSqlDoc(page) {
   if (!_dbx.src) return;
   dbxAcClose();
   dbxPreviewHide();   // 从单表文档切过来：数据页的预览不跨文档保留
@@ -17808,7 +18239,8 @@ function dbxOpenSqlDoc() {
   }
   _dbx.sqlDoc = true;
   _dbx.tab = 'sql';
-  _dbx.sqlPage = 'editor';   // 从表文档点「SQL 查询」进来先停在编辑页
+  // 默认停在编辑页；从表文档点「查询结果」进来要直接看结果，不能被重置回编辑页
+  _dbx.sqlPage = page === 'result' ? 'result' : 'editor';
   dbxSqlHlInit(true);        // 回到 SQL 文档：两层对齐、光标收到末尾，不留隐形文本和看不见的选区
   dbxShowTableCard(true);
   dbxSetTableHead(_dbx.sel);
@@ -17829,6 +18261,7 @@ function dbxSqlPage(page, skipFocus) {
   if (em) em.classList.toggle('on', page === 'editor');
   if (rs) rs.classList.toggle('on', page === 'result');
   if (_dbx.sqlDoc && changed) dbxRenderDocTabs();   // 标签条上的高亮跟着换
+  if (page === 'editor') dbxSqlMeta();
   if (page === 'editor' && !skipFocus) {
     var ta = document.getElementById('dbx-sql');
     if (ta) ta.focus();
@@ -17938,16 +18371,20 @@ function dbxRenderDocTabs() {
   var box = document.getElementById('dbx-doc-tabs');
   if (!box) return;
   var nav = document.getElementById('dbx-doc-tabnav');
+  var runAll = document.getElementById('dbx-run-all');
   if (!_dbx.src) {
     box.style.display = 'none';
     box.innerHTML = '';
     if (nav) nav.style.display = 'none';
+    if (runAll) runAll.style.display = 'none';
     return;
   }
   // SQL 固定排在最前：它是整个数据源共用的控制台，不属于任何一张表
   // 停在 SQL 文档时直接把「SQL 查询 / 查询结果」两页铺在同一排标签上，
   // 不再额外挂一个同名入口，同一个卡片里只出现一次「SQL 查询」
   var sqlOn = !!_dbx.sqlDoc;
+  // 执行按钮只在 SQL 文档（编辑器可见）时才有意义
+  if (runAll) runAll.style.display = sqlOn ? '' : 'none';
   var html;
   if (sqlOn) {
     var page = _dbx.sqlPage === 'result' ? 'result' : 'editor';
@@ -17960,6 +18397,14 @@ function dbxRenderDocTabs() {
   } else {
     html = '<button class="dbx-doc-tab dbx-doc-sql" data-doc="sql"' +
       ' title="当前数据源共享的 SQL 控制台" onclick="dbxOpenSqlDoc()"><span class="nm">SQL 查询</span></button>';
+    // 表文档激活时也要保留「查询结果」：开了表回头看一眼刚才查的结果，
+    // 不用先切回 SQL 查询；没有结果集时不占位。点它直接回到结果页
+    var rc = _dbxSqlPageBadgeText();
+    if ((_dbx.results || []).length) {
+      html += '<button class="dbx-doc-tab dbx-doc-sql-page" data-page="result"' +
+        ' title="上次执行的查询结果" onclick="dbxOpenSqlDoc(\'result\')"><span class="nm">查询结果</span>' +
+        '<span class="dbx-tab-badge on" id="dbx-rs-tab-badge">' + escHtml(rc) + '</span></button>';
+    }
   }
   var list = _dbx.tabs || [];
   for (var i = 0; i < list.length; i++) {
@@ -18032,6 +18477,7 @@ function dbxActivateTab(name) {
   _dbx.defEdit = null;
   var w = document.getElementById('dbx-data-where');
   if (w) w.value = st.where || '';
+  dbxWhereHl();   // 恢复条件后同步彩色层
   dbxShowTableCard(true);
   dbxSetTableHead(name);
   dbxRenderTables(_dbx.tables);
@@ -18153,14 +18599,17 @@ function initDbWorkbench() {
   if (last && last.schema) _dbx.pendingSchema = last.schema;
   var wantSid = (last && last.source_id) || '';
   return dbxLoadSources(wantSid).then(function () {
-    _sqlqBoot();   // 恢复上次打开的 SQL 文件（失败不影响工作台本身）
-    if (!last || !last.table || !_dbx.src) return;
-    if (last.source_id !== _dbx.src.id) return;
-    if (_dbx.tables.indexOf(last.table) < 0) return;
-    var tab = (last.tab === 'sql' || last.tab === 'def') ? last.tab : 'data';
-    dbxOpenTable(last.table);
-    if (tab === 'sql') dbxOpenSqlDoc();
-    else if (tab === 'def') dbxSetTab('def', true);
+    // 恢复上次打开的 SQL 文件（失败不影响工作台本身）；它可能把库切到文件记的那个，
+    // 所以等它切完再恢复上次的表，否则两边抢库
+    return _sqlqBoot().then(function () {
+      if (!last || !last.table || !_dbx.src) return;
+      if (last.source_id !== _dbx.src.id) return;
+      if (_dbx.tables.indexOf(last.table) < 0) return;
+      var tab = (last.tab === 'sql' || last.tab === 'def') ? last.tab : 'data';
+      dbxOpenTable(last.table);
+      if (tab === 'sql') dbxOpenSqlDoc();
+      else if (tab === 'def') dbxSetTab('def', true);
+    });
   });
 }
 
@@ -18297,6 +18746,80 @@ function dbxAcHide() {
   _dbxAcState.idx = 0;
 }
 
+/* ---------- 条件框着色：颜色表照搬 SQL 编辑器，只区分关键字/函数/字符串/字面量 ---------- */
+// 条件表达式里的字段名、比较符、括号都用正文色，跟 SQL 编辑器里普通标识符一个待遇
+var _DBX_WHERE_KW = {};
+var _DBX_WHERE_LIT = {};
+(function () {
+  ('and or not is like in between exists regexp rlike xor escape binary collate ' +
+   'glob match').split(/\s+/).forEach(function (w) { if (w) _DBX_WHERE_KW[w] = 1; });
+  ('null true false unknown').split(/\s+/).forEach(function (w) { if (w) _DBX_WHERE_LIT[w] = 1; });
+})();
+
+// 把条件拆成字符串 / 数字 / 逻辑词 / 函数名，逐段包 span；其余原样输出
+function _dbxWhereHlHtml(s) {
+  s = String(s || '');
+  var out = '', i = 0, n = s.length;
+  while (i < n) {
+    var ch = s.charAt(i);
+    // 字符串值
+    if (ch === "'") {
+      var k = _dbxSqlScanQuote(s, i, "'");
+      out += '<span class="str">' + escHtml(s.slice(i, k)) + '</span>';
+      i = k; continue;
+    }
+    // 反引号 / 双引号包着的字段名：与 SQL 编辑器里引号标识符同色（正文色）
+    if (ch === '`' || ch === '"') {
+      var k2 = _dbxSqlScanQuote(s, i, ch);
+      out += escHtml(s.slice(i, k2));
+      i = k2; continue;
+    }
+    // 数字值（字段名里的数字留在单词里，不当值）
+    if (ch >= '0' && ch <= '9' && !/[A-Za-z0-9_$\u4e00-\u9fa5]/.test(s.charAt(i - 1) || '')) {
+      var m = /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(s.slice(i));
+      out += '<span class="num">' + escHtml(m[0]) + '</span>';
+      i += m[0].length; continue;
+    }
+    // 比较符号：正文色，不上色
+    var op = /^(?:<=|>=|<>|!=|==|=|<|>)/.exec(s.slice(i));
+    if (op) {
+      out += escHtml(op[0]);
+      i += op[0].length; continue;
+    }
+    // 单词：逻辑词 / 字面量 / 函数名，普通字段名原样输出
+    if (/[A-Za-z_$\u4e00-\u9fa5]/.test(ch)) {
+      var e = i + 1;
+      while (e < n && /[A-Za-z0-9_$\u4e00-\u9fa5]/.test(s.charAt(e))) e++;
+      var word = s.slice(i, e), low = word.toLowerCase();
+      if (_DBX_WHERE_KW[low]) {
+        out += '<span class="kw">' + escHtml(word) + '</span>';
+        i = e; continue;
+      }
+      if (_DBX_WHERE_LIT[low]) {
+        out += '<span class="num">' + escHtml(word) + '</span>';
+        i = e; continue;
+      }
+      var p = e;
+      while (p < n && (s.charAt(p) === ' ' || s.charAt(p) === '\t')) p++;
+      out += s.charAt(p) === '(' ? '<span class="fn">' + escHtml(word) + '</span>' : escHtml(word);
+      i = e; continue;
+    }
+    out += escHtml(ch);
+    i++;
+  }
+  return out;
+}
+
+// 输入框里的文字是透明的，刷新这层才有颜色；程序改 value 的地方都要手动调一次
+function dbxWhereHl() {
+  var el = document.getElementById('dbx-data-where');
+  var hl = document.getElementById('dbx-data-where-hl');
+  if (!el || !hl) return;
+  if (!el.value) { hl.textContent = ''; return; }
+  hl.innerHTML = _dbxWhereHlHtml(el.value);
+  hl.scrollLeft = el.scrollLeft;   // 单行输入框内部横向滚动时两层同步，长条件不会错位
+}
+
 // 按光标前的字段片段弹候选：前缀命中优先，其次包含命中
 function dbxWhereAc(el, force) {
   var box = document.getElementById('dbx-ac');
@@ -18362,6 +18885,7 @@ function dbxAcPick(k) {
   var start = m ? caret - m[0].length : caret;
   var ins = /^[A-Za-z0-9_$\u4e00-\u9fa5]+$/.test(it.name) ? it.name : _dbxQuote(it.name);
   el.value = el.value.slice(0, start) + ins + el.value.slice(caret);
+  dbxWhereHl();   // 补全插入后重新上色
   var pos = start + ins.length;
   el.focus();
   el.setSelectionRange(pos, pos);
@@ -18380,6 +18904,22 @@ function dbxWhereKey(e) {
       return false;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
+      // 候选就是刚敲完的那个词（如输入 status 时弹的 status）：没什么可补的，
+      // 回车直接查询；否则回车被补全吃掉，看着就像「回车没反应 / 条件没生效」
+      var it = _dbxAcState.items[_dbxAcState.idx];
+      var el = document.getElementById('dbx-data-where');
+      var tokn = '';
+      if (el) {
+        var mm = el.value.slice(0, el.selectionStart || 0).match(/[A-Za-z0-9_$\u4e00-\u9fa5]+$/);
+        tokn = mm ? mm[0] : '';
+      }
+      if (it && tokn && it.name.toLowerCase() === tokn.toLowerCase()) {
+        dbxAcHide();
+        if (e.key === 'Tab') return true;
+        e.preventDefault();
+        dbxDataGo(0);
+        return false;
+      }
       e.preventDefault();
       dbxAcPick(_dbxAcState.idx);
       return false;
@@ -18418,6 +18958,7 @@ function dbxFilterWhere(expr) {
   if (!el) return;
   var cur = (el.value || '').trim();
   el.value = cur ? '(' + cur + ') AND (' + expr + ')' : expr;
+  dbxWhereHl();   // 右键快捷筛选追加后重新上色
   if (_dbx.data) _dbx.data.offset = 0;
   dbxDataGo(0);
 }
@@ -18469,6 +19010,17 @@ function _dbxFlSplitList(s) {
   return out;
 }
 
+// 段里有没有还没吃到 AND 的 BETWEEN：price BETWEEN 1 AND 9 里的 AND 属于区间写法，不能当连接符
+function _dbxFlOpenBtw(str) {
+  var btw = 0, re = /\b(AND|OR|BETWEEN)\b/gi, m;
+  while ((m = re.exec(str))) {
+    var w = m[1].toUpperCase();
+    if (w === 'BETWEEN') btw++;
+    else if (w === 'AND' && btw > 0) btw--;
+  }
+  return btw > 0;
+}
+
 // 顶层 AND / OR 切分（引号与括号内的不算）
 function _dbxFlSplitTop(s) {
   var parts = [], buf = '', depth = 0, q = '', conn = '';
@@ -18482,9 +19034,16 @@ function _dbxFlSplitTop(s) {
     if (ch === "'" || ch === '"' || ch === '`') { q = ch; buf += ch; continue; }
     if (ch === '(') { depth++; buf += ch; continue; }
     if (ch === ')') { depth = Math.max(0, depth - 1); buf += ch; continue; }
-    if (depth === 0) {
-      var m = s.slice(i).match(/^(AND|OR)\b/i);
-      if (m) {
+    if (depth === 0 && (i === 0 || /\s/.test(s.charAt(i - 1)))) {
+      // AND / OR 前后必须是空白或括号：否则 brand、order_id 这类列名里的 and / or
+      // 会被当成连接符，把一段条件切成两段半截（brand = 'Apple' → br + = 'Apple'）
+      var m = s.slice(i).match(/^(AND|OR)(?=[\s(]|$)/i);
+      if (m && m[1].toUpperCase() === 'AND' && _dbxFlOpenBtw(buf)) {
+        buf += m[0];
+        i += m[0].length - 1;
+        continue;
+      }
+      if (m && _dbxFlTrim(buf)) {
         parts.push({ text: _dbxFlTrim(buf), conn: conn });
         conn = m[1].toUpperCase();
         buf = '';
@@ -18511,9 +19070,32 @@ function _dbxFlUnquote(s) {
   return v;
 }
 
-// 把一条表达式还原成条件行；认不出来就返回 null
-function _dbxFlParseOne(expr) {
-  var s = _dbxFlTrim(expr);
+// 值里出现引号外的括号或 AND / OR，说明这段不是「字段 运算符 值」，
+// 硬塞进值输入框会把条件改坏（如 (status = 1 OR id < 5) 被当成 status = '1 OR id < 5'）
+function _dbxFlHasLogic(s) {
+  var q = '', str = String(s === null || s === undefined ? '' : s);
+  for (var i = 0; i < str.length; i++) {
+    var ch = str.charAt(i);
+    if (q) {
+      if (ch === q) {
+        if (str.charAt(i + 1) === q) { i++; continue; }
+        q = '';
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; continue; }
+    if (ch === '(' || ch === ')') return true;
+    if (/[A-Za-z_]/.test(ch) && !/[A-Za-z0-9_$]/.test(str.charAt(i - 1) || '')) {
+      if (/^(?:AND|OR)\b/i.test(str.slice(i))) return true;
+    }
+  }
+  return false;
+}
+
+// 整串被一对括号包住时剥掉：(a AND b) 和 a AND b 是同一个条件。
+// 不剥的话重新打开面板时找不到顶层 AND，整条会退化成不能分字段编辑的原始文本
+function _dbxFlUnwrap(s) {
+  s = _dbxFlTrim(s);
   while (s.length > 1 && s.charAt(0) === '(' && s.charAt(s.length - 1) === ')') {
     var depth = 0, balanced = true;
     for (var i = 0; i < s.length; i++) {
@@ -18524,6 +19106,12 @@ function _dbxFlParseOne(expr) {
     if (!balanced || depth !== 0) break;
     s = _dbxFlTrim(s.slice(1, -1));
   }
+  return s;
+}
+
+// 把一条表达式还原成条件行；认不出来就返回 null
+function _dbxFlParseOne(expr) {
+  var s = _dbxFlUnwrap(expr);
   var m = s.match(/^(?:"([^"]+)"|`([^`]+)`|([A-Za-z_][\w$]*|[\u4e00-\u9fa5][\w$\u4e00-\u9fa5]*))\s*(IS\s+NOT\s+NULL|IS\s+NULL|NOT\s+IN|NOT\s+LIKE|IN|LIKE|BETWEEN|>=|<=|<>|!=|=|>|<)\s*([\s\S]*)$/i);
   if (!m) return null;
   var col = m[1] || m[2] || m[3] || '';
@@ -18534,9 +19122,16 @@ function _dbxFlParseOne(expr) {
   if (op === 'IS NULL') { row.op = 'isnull'; return row; }
   if (op === 'IS NOT NULL') { row.op = 'notnull'; return row; }
   if (op === 'IN' || op === 'NOT IN') {
-    if (rest.charAt(0) === '(' && rest.charAt(rest.length - 1) === ')') rest = rest.slice(1, -1);
+    // 括号必须成对包住整个列表；没包住或列表里夹着别的表达式，整条退回原样保留
+    if (rest.charAt(0) === '(') {
+      if (rest.charAt(rest.length - 1) !== ')') return null;
+      rest = rest.slice(1, -1);
+    } else if (_dbxFlHasLogic(rest)) {
+      return null;
+    }
     var vals = _dbxFlSplitList(rest);
     if (!vals.length) return null;
+    for (var vi = 0; vi < vals.length; vi++) if (_dbxFlHasLogic(vals[vi])) return null;
     row.op = op === 'IN' ? 'in' : 'notin';
     row.val = vals.map(_dbxFlUnquote).join(', ');
     return row;
@@ -18544,11 +19139,13 @@ function _dbxFlParseOne(expr) {
   if (op === 'BETWEEN') {
     var bm = rest.match(/^([\s\S]+?)\s+AND\s+([\s\S]+)$/i);
     if (!bm) return null;
+    if (_dbxFlHasLogic(bm[1]) || _dbxFlHasLogic(bm[2])) return null;
     row.op = 'between';
     row.val = _dbxFlUnquote(bm[1]) + ', ' + _dbxFlUnquote(bm[2]);
     return row;
   }
   if (op === 'LIKE' || op === 'NOT LIKE') {
+    if (_dbxFlHasLogic(rest)) return null;
     var pat = _dbxFlUnquote(rest);
     var lead = pat.charAt(0) === '%';
     var tail = pat.length > 1 && pat.charAt(pat.length - 1) === '%';
@@ -18560,13 +19157,14 @@ function _dbxFlParseOne(expr) {
     else row.op = (lead && tail) ? 'contains' : (tail ? 'startswith' : (lead ? 'endswith' : '='));
     return row;
   }
+  if (_dbxFlHasLogic(rest)) return null;
   row.op = (op === '<>') ? '!=' : op;
   row.val = _dbxFlUnquote(rest);
   return row;
 }
 
 function dbxFlParse(where) {
-  var s = _dbxFlTrim(where);
+  var s = _dbxFlUnwrap(where);
   if (!s) return [];
   var segs = _dbxFlSplitTop(s);
   var rows = [];
@@ -18581,7 +19179,7 @@ function dbxFlParse(where) {
 
 // prefix 给关联查询用（a. / b.），num 不传时按当前表的列类型判断
 function _dbxFlExpr(r, prefix, num) {
-  if (r.raw) return '(' + r.raw + ')';
+  if (r.raw) return '(' + _dbxFlUnwrap(r.raw) + ')';   // 括号只留一层，反复应用不会越叠越多
   if (!r.col) return '';
   var q = (prefix || '') + _dbxQuote(r.col);
   if (typeof num === 'undefined') num = _dbxIsNumCol(r.col);
@@ -18727,6 +19325,7 @@ function dbxFilterApply() {
   dbxFilterClose();
   var el = document.getElementById('dbx-data-where');
   if (el) el.value = w;
+  dbxWhereHl();   // 面板应用后重新上色
   if (_dbx.data) _dbx.data.offset = 0;
   dbxDataGo(0);
 }
@@ -19181,6 +19780,7 @@ function dbxJoinApply() {
 function dbxClearFilters() {
   var el = document.getElementById('dbx-data-where');
   if (el) el.value = '';
+  dbxWhereHl();   // 清空后把彩色层一并清掉
   if (_dbx.data) { _dbx.data.order = null; _dbx.data.offset = 0; }
   dbxDataGo(0);
   showToast('已清除过滤和排序');
@@ -19892,6 +20492,7 @@ function dbxOpenTable(name) {
   _dbx.limit = 100;
   var w = document.getElementById('dbx-data-where');
   if (w) w.value = '';
+  dbxWhereHl();
   dbxShowTableCard(true);
   dbxSetTableHead(name);
   dbxRenderTables(_dbx.tables);
@@ -20708,7 +21309,8 @@ function dbxRenderData() {
   var insList = (dr && dr.inserts) || [];
   var autoCols = d.auto_cols || [];   // 自增列：新增行不给输入框，交给数据库生成
   if (!rows.length && !insList.length) {
-    html += '<tr><td colspan="' + (vis.length + 1) + '"><div class="dbx-result-empty" style="padding:16px">没有匹配的数据</div></td></tr>';
+    // 列很多时 colspan 的格子会宽到屏幕外，提示得靠左，否则居中后看不见
+    html += '<tr><td colspan="' + (vis.length + 1) + '"><div class="dbx-result-empty" style="padding:16px;text-align:left">没有匹配的数据</div></td></tr>';
   }
   for (var r = 0; r < rows.length; r++) {
     var isDel = !!(dr && dr.deletes[r]);
@@ -21404,9 +22006,12 @@ function dbxPagerHtml(d) {
   var from = shown ? off + 1 : 0;
   var to = off + shown;
   var last = total > 0 ? Math.floor((total - 1) / limit) * limit : 0;
+  // 有筛选条件时 total 是筛选后的条数，还写「全表」会让人以为条件没生效
+  var cond = String(d.where || '').trim();
+  var scope = cond ? '筛选后' : '全表';
   var label = shown
-    ? ('第 ' + from + ' - ' + to + ' 行 / 全表 ' + total + ' 行')
-    : ('全表 ' + total + ' 行');
+    ? ('第 ' + from + ' - ' + to + ' 行 / ' + scope + ' ' + total + ' 行')
+    : (scope + ' ' + total + ' 行');
   // 每页条数与翻页放同一行，都贴在表格下方
   var sizes = [50, 100, 200, 500];
   var h = '<span>每页</span><select class="dbx-select" id="dbx-data-limit" onchange="dbxDataLimit()">';
@@ -21414,7 +22019,10 @@ function dbxPagerHtml(d) {
     h += '<option value="' + sizes[i] + '"' + (sizes[i] === limit ? ' selected' : '') + '>' + sizes[i] + ' 条</option>';
   }
   h += '</select>';
-  h += '<span class="dbx-pager-sep"></span><span title="全表共 ' + total + ' 行，翻页可查看其余数据">' + label + '</span>';
+  var tip = cond
+    ? ('已按条件筛选：' + cond + ' —— 共 ' + total + ' 行')
+    : ('全表共 ' + total + ' 行，翻页可查看其余数据');
+  h += '<span class="dbx-pager-sep"></span><span title="' + escHtml(tip) + '">' + label + '</span>';
   h += '<button class="dbx-mini" ' + (off <= 0 ? 'disabled' : '') + ' onclick="dbxPagerGo(0)">首页</button>';
   h += '<button class="dbx-mini" ' + (off <= 0 ? 'disabled' : '') + ' onclick="dbxPagerGo(' + Math.max(0, off - limit) + ')">上一页</button>';
   h += '<button class="dbx-mini" ' + (off + limit >= total ? 'disabled' : '') + ' onclick="dbxPagerGo(' + (off + limit) + ')">下一页</button>';
@@ -21430,6 +22038,7 @@ function dbxDataReset() {
   dbxGuardLeave(function () {
     var w = document.getElementById('dbx-data-where');
     if (w) w.value = '';
+    dbxWhereHl();
     _dbx.limit = 100;
     var st = _dbxActiveState();
     if (st) { st.limit = 100; st.where = ''; }
@@ -21508,7 +22117,8 @@ function dbxAcClose() {
 function dbxSqlInput() {
   dbxAcUpdate(false);
   dbxSqlHlUpdate();
-  _sqlqSync();   // 改动后刷新保存按钮与状态文案
+  _sqlqSync();       // 改动后刷新保存按钮与状态文案
+  _sqlqAutoQueue();  // 打字停下约 1 秒后自动存回当前文件
 }
 
 /* ---------- SQL 注释着色：textarea 文字透明，高亮层渲染彩色文本 ---------- */
@@ -21516,9 +22126,68 @@ function dbxSqlHlUpdate() {
   var el = document.getElementById('dbx-sql');
   var hl = document.getElementById('dbx-sql-hl');
   if (!el || !hl) return;
-  hl.innerHTML = _dbxSqlHlHtml(el.value) + '\n';
+  hl.innerHTML = _dbxSqlHlHtmlStmts(el.value) + '\n';
   hl.scrollTop = el.scrollTop;
   hl.scrollLeft = el.scrollLeft;
+  dbxSqlMeta();
+}
+
+// 编辑页顶栏的概况：当前库 + 可执行语句条数，「执行全部」要跑多少条一眼能看出来
+function dbxSqlMeta() {
+  var el = document.getElementById('dbx-sql-meta');
+  if (!el) return;
+  var ta = _sqlqEditor();
+  var n = ta ? _dbxSplitStmts(ta.value).length : 0;
+  var bits = [];
+  if (_dbx.schema) bits.push(_dbx.schema);
+  bits.push(n ? n + ' 条语句' : '没有可执行的语句');
+  el.textContent = bits.join(' · ');
+}
+
+// 语句第一条真正有代码的行的行首：跳过整行都是注释的部分（-- / # / 跨行 /* */）。
+// 例：把第一条语句整行注释掉、空一行再写第二条时，语句起点仍然落在注释行（分号在注释里），
+// 三角若跟着语句起点走就会跑到注释行上，看起来像「执行按钮挂到注释上了」
+function _dbxStmtCodeLine(s, from, to) {
+  var i = from, n = Math.min(to, s.length), q = null, block = false;
+  while (i < n) {
+    var ch = s.charAt(i), nx = s.charAt(i + 1);
+    if (block) { if (ch === '*' && nx === '/') { block = false; i += 2; } else i++; continue; }
+    if (q) {
+      if (ch === '\\' && q !== '`') { i += 2; continue; }
+      if (ch === q) { if (nx === q) { i += 2; continue; } q = null; }
+      i++; continue;
+    }
+    if (ch === '\n' || ch === ' ' || ch === '\t' || ch === '\r') { i++; continue; }
+    if (ch === '-' && nx === '-') { var j = s.indexOf('\n', i); i = (j < 0 || j > n) ? n : j; continue; }
+    if (ch === '#') { var k = s.indexOf('\n', i); i = (k < 0 || k > n) ? n : k; continue; }
+    if (ch === '/' && nx === '*') { block = true; i += 2; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; i++; continue; }
+    return s.lastIndexOf('\n', i - 1) + 1;   // 第一个真正的代码字符→它所在行的行首
+  }
+  return s.lastIndexOf('\n', from - 1) + 1;
+}
+
+// 在高亮层里给每条语句的行首塞一个 ▶：点它只跑这一条（见 dbxRunStmtAt）。
+// 按语句所在行的行首把文本切段逐段着色，段间不插任何字符，两层文字仍逐字对齐
+function _dbxSqlHlHtmlStmts(s) {
+  s = String(s || '');
+  var spans = _dbxStmtSpans(s);
+  if (!spans.length) return _dbxSqlHlHtml(s);
+  var out = '', prev = 0, placed = -1;
+  for (var i = 0; i < spans.length; i++) {
+    var ls = _dbxStmtCodeLine(s, spans[i].start, spans[i].end);   // 语句第一条代码行的行首
+    // 同一行里接着写的语句（a; b;）不画三角：按钮会压在前一条语句身上
+    if (ls <= placed) continue;
+    out += _dbxSqlHlHtml(s.slice(prev, ls));
+    out += '<span class="dbx-run" data-stmt="' + i + '" role="button" tabindex="-1"' +
+      ' title="执行第 ' + (i + 1) + ' 条语句（只跑这一条）"' +
+      ' onmousedown="event.preventDefault();event.stopPropagation()"' +
+      ' onclick="event.stopPropagation();dbxRunStmtAt(' + i + ')"></span>';
+    prev = ls;
+    placed = ls;
+  }
+  out += _dbxSqlHlHtml(s.slice(prev));
+  return out;
 }
 
 function dbxSqlHlScroll() {
@@ -22187,10 +22856,29 @@ function dbxSqlKey(e) {
   if (e.key === 'Tab') { e.preventDefault(); dbxInsert('  '); }
 }
 
+// MySQL 的原始报错对人不好读：(1146, "Table 'api_gate.m_mebthirdpartyuidpro' doesn't exist")
+// 翻成「哪个库缺哪张表 + 怎么找」。1146 最常见的成因不是表名写错，而是库选错了
+function _dbxFriendlyErr(msg) {
+  var s = String(msg === null || msg === undefined ? '' : msg);
+  var m = s.match(/Table '([^']+)' doesn't exist/i) || s.match(/Table '([^']+)' does not exist/i);
+  if (m) {
+    var full = m[1], dot = full.indexOf('.');
+    if (dot > 0) {
+      return '库 ' + full.slice(0, dot) + ' 里没有表 ' + full.slice(dot + 1) +
+        '（当前库：' + full.slice(0, dot) + '）。表可能在别的库：先在左侧切到那个库，或把语句写成 `库名`.`表名`';
+    }
+    return '表不存在：' + full + '，请检查表名';
+  }
+  if (/No database selected/i.test(s)) {
+    return '还没选库（No database selected）：先在左侧选中一个库，或把表名写成 `库名`.`表名`';
+  }
+  return s;
+}
+
 function dbxResultError(msg) {
   var box = document.getElementById('dbx-result');
   box.className = 'dbx-result';
-  box.innerHTML = '<div class="dbx-result-empty" style="color:var(--red)">' + escHtml(msg) + '</div>';
+  box.innerHTML = '<div class="dbx-result-empty" style="color:var(--red)">' + escHtml(_dbxFriendlyErr(msg)) + '</div>';
   dbxRsBarHide();
   _dbx.result = null;
 }
@@ -22302,7 +22990,10 @@ function dbxRsBarHide() {
 }
 
 function _dbxRsLabel(rs) {
-  var s = String((rs && rs.sql) || '').replace(/\s+/g, ' ').trim();
+  // 语句前面可能挂着几行注释，胶囊上只显示真正会执行的那句（否则显示成「-- SELECT …」）
+  var raw = String((rs && rs.sql) || '');
+  var s = raw.replace(/^(?:\s*(?:--[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/))+/g, '').replace(/\s+/g, ' ').trim();
+  if (!s) s = raw.replace(/\s+/g, ' ').trim();
   return s.length > 58 ? s.slice(0, 58) + '…' : s;
 }
 
@@ -22720,10 +23411,49 @@ function dbxRsCopySelection() {
   return false;
 }
 
-// 工具条「刷新」：按编辑区 SQL 重跑，和数据页刷新按钮语义一致
+// 结果页的「刷新」：只重新查询当前结果集对应的那一条语句。
+// 不能走 dbxRun()——那是把编辑器里的整段 SQL 重新执行一遍（几条语句就重跑几条，
+// 编辑器改了内容也照样重跑），点一下刷新就等于把整个查询再执行一次，很容易跑出意外。
+// 这里只拿执行时每条语句留下的快照单独发一次查询，回来只替换这一个结果集，
+// 其它语句的结果集、胶囊序号、排序与当前页都原样保留。
 function dbxRsReload() {
-  if (!(_dbx.results || []).length) { showToast('还没有可刷新的查询结果'); return; }
-  dbxRun();
+  var list = _dbx.results || [];
+  var idx = _dbx.rsIdx;
+  var rs = list[idx];
+  if (!rs) { showToast('还没有可刷新的查询结果'); return; }
+  if (_dbx.rsReloading) return;   // 连点只发一次，不叠加执行
+  var sql = String(rs.sql || '').trim();
+  if (!sql) { showToast('这个结果集没有记录语句，请重新执行查询'); return; }
+  if (_dbxIsWrite(_dbxCommentless(sql))) { showToast('这是写入语句的结果，刷新不会重新执行它'); return; }
+  var origin = _dbx.rsOrigin;
+  if (!_dbx.src || !origin || origin.id !== _dbx.src.id || (origin.schema || '') !== (_dbx.schema || '')) {
+    showToast('数据源或库已切换，请重新执行查询');
+    return;
+  }
+  _dbx.rsReloading = true;
+  var btn = document.getElementById('dbx-rs-reload-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; }
+  dbxSetHint('刷新中：第 ' + (rs.index || idx + 1) + ' 条语句');
+  function done() {
+    _dbx.rsReloading = false;
+    if (btn) { btn.disabled = false; btn.textContent = '刷新'; }
+  }
+  _dbxPost('/api/db/query', { source_id: origin.id, schema: origin.schema, sql: sql }).then(function (d) {
+    done();
+    if (!d.ok) { dbxSetHint('刷新失败：' + (d.error || ''), true); showToast(d.error || '刷新失败'); return; }
+    var fresh = (d.results || [])[0];
+    if (!fresh) { dbxSetHint('这条语句没有返回结果集，刷新不了', true); return; }
+    var cur = (_dbx.results || [])[idx];
+    if (!cur) return;   // 期间重跑过别的查询，这次刷新结果已过期，丢掉
+    cur.columns = fresh.columns || [];
+    cur.rows = fresh.rows || [];
+    cur.count = fresh.count !== undefined ? fresh.count : cur.rows.length;
+    cur.truncated = !!fresh.truncated;
+    dbxRenderRsBar();
+    dbxRenderResultPage();
+    dbxSqlPageBadge();
+    dbxSetHint('已刷新第 ' + (cur.index || idx + 1) + ' 条 · 共 ' + cur.count + ' 行 · ' + (d.elapsed_ms || 0) + ' ms');
+  });
 }
 
 function dbxRsHeadMenu(ev, th) {
@@ -22847,18 +23577,19 @@ function _dbxSqlRunText() {
 
 // 按钮跟着选区变：选中就显示「执行选中」，让用户看得出这次的执行范围
 function dbxUpdateRunBtn() {
-  var btn = document.getElementById('dbx-run-btn');
+  var btn = document.getElementById('dbx-run-all');
   if (!btn) return;
+  var txt = document.getElementById('dbx-run-all-txt');
   var picked = _dbxSqlRunText();
   var n = picked.partial ? _dbxSplitStmts(picked.text).length : 0;
-  btn.textContent = picked.partial ? '执行选中' : '执行';
+  if (txt) txt.textContent = picked.partial ? '执行选中' : '执行全部';
   if (picked.partial && !n) {
     // 选中的只有注释：保持「执行选中」语义，不偷偷换成全文，但把下一步告诉用户
     btn.title = '选中的内容只有注释，没有可执行的语句';
   } else {
     btn.title = picked.partial
       ? '只执行选中的 ' + n + ' 条语句（Ctrl+Enter 同样生效）'
-      : '执行全部语句；先在编辑器里选中一段 SQL 可只执行选中部分';
+      : '执行编辑器里的全部语句（同 Ctrl+Enter）；只跑某一条就点语句行首的三角';
   }
   _sqlqSync();   // 撤销 / 选区变化也会改动内容，顺手同步文件状态
 }
@@ -22869,9 +23600,15 @@ var _sqlq = {
   cur: '',       // 当前关联的文件名，空 = 还没存过（草稿）
   saved: '',     // 打开 / 保存那一刻的内容：与编辑器不同就算「改动未保存」
   booted: false,
+  busy: false,   // 手动保存 / 改名进行中：这段时间不插自动保存，免得两个请求掺着写同一个文件
+  saving: false, // 自动保存请求在途：期间不并第二个，免得两条请求抢着写同一个文件
+  pending: false, // 在途期间又改过：等这条回来再补存一次
+  savedAt: 0,    // 内容落盘的时间：打开文件时取磁盘 mtime，保存成功时取当下
   syncKey: ''    // 上次同步到界面上的状态：没变就不反复改 DOM
 };
 var _SQLQ_LAST_KEY = 'api_tester_sqlq_last';
+var _sqlqAutoTimer = 0;
+var _SQLQ_AUTO_DELAY = 2000;   // 停下输入多久后自动落盘（间歇性停一下就改一个字时，不反复写盘）
 
 function _sqlqEditor() { return document.getElementById('dbx-sql'); }
 
@@ -22882,18 +23619,43 @@ function _sqlqDirty() {
   return String(el.value || '') !== String(_sqlq.saved || '');
 }
 
-function _sqlqState(text, isErr) {
+// 文件状态只在需要提醒时出现：不传 tone 就把胶囊收起来（存好了不用占位置）
+function _sqlqState(text, tone) {
   var el = document.getElementById('sqlq-file-state');
   if (!el) return;
-  el.className = 'dbx-hint' + (isErr ? ' err' : '');
-  el.textContent = text;
+  el.className = 'dbx-file-state' + (tone ? ' ' + tone : ' is-idle');
+  el.textContent = tone ? text : '';
+  if (tone === 'saved') el.title = '已保存到 data/sql/' + _sqlq.cur + '.sql' + (_sqlq.savedAt ? ' · ' + _sqlqStampText() : '');
+  else el.title = _sqlq.cur
+    ? '已开启自动保存：停下输入约 2 秒就写回「' + _sqlq.cur + '」（Ctrl+S 立即保存）'
+    : '还没有关联文件：起个名字保存一次后，之后的改动会自动保存';
+}
+
+function _sqlqP2(n) { return (n < 10 ? '0' : '') + n; }
+
+// 已保存文案：当天只报时间，跨天补上日期，避免“今天下午”和“上周”看着一样
+function _sqlqSavedLabel() {
+  if (!_sqlq.savedAt) return '已保存';
+  var t = new Date(_sqlq.savedAt), now = new Date();
+  var hm = _sqlqP2(t.getHours()) + ':' + _sqlqP2(t.getMinutes());
+  var sameDay = t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth() && t.getDate() === now.getDate();
+  return '已保存 ' + (sameDay ? hm : (_sqlqP2(t.getMonth() + 1) + '-' + _sqlqP2(t.getDate()) + ' ' + hm));
+}
+
+function _sqlqStampText() {
+  var t = new Date(_sqlq.savedAt);
+  return t.getFullYear() + '-' + _sqlqP2(t.getMonth() + 1) + '-' + _sqlqP2(t.getDate()) +
+    ' ' + _sqlqP2(t.getHours()) + ':' + _sqlqP2(t.getMinutes());
 }
 
 // 保存按钮只在有改动时点亮；删除 / 重命名跟着「有没有关联文件」启用
 function _sqlqSync() {
   if (typeof _sqlq === 'undefined') return;
   var dirty = _sqlqDirty();
-  var key = (dirty ? '1' : '0') + '|' + (_sqlq.cur || '');
+  // 内容已经存好就把待跑的定时器撤掉；排程交给真实输入（见 dbxSqlInput），
+  // 清空 / 模板插入 / 格式化这些一键操作仍旧按原来的手动保存走，不自动落盘
+  if (!dirty) clearTimeout(_sqlqAutoTimer);
+  var key = (dirty ? '1' : '0') + '|' + (_sqlq.cur || '') + '|' + (_sqlq.savedAt || 0);
   // 有改动时把「SQL 操作」点亮，相当于一次「待保存」提示
   var btn = document.getElementById('sqlq-menu-btn');
   if (btn && btn.classList.contains('ready') !== dirty) btn.classList.toggle('ready', dirty);
@@ -22904,12 +23666,73 @@ function _sqlqSync() {
   if (rn) rn.disabled = !_sqlq.cur;
   var del = document.getElementById('sqlq-mi-del');
   if (del) del.disabled = !_sqlq.cur;
-  _sqlqState(dirty ? '有改动未保存' : (_sqlq.cur ? '已保存' : '草稿'));
+  if (dirty) _sqlqState('有改动未保存', 'dirty');
+  else if (_sqlq.cur) _sqlqState(_sqlqSavedLabel(), 'saved');
+  else _sqlqState('');   // 草稿还不属于任何文件，不占位
 }
+
+// 自动保存：只写回已有关联的文件，没有文件时不自动起名（否则磁盘上会堆一串 SQL_时间戳.sql）
+function _sqlqAutoQueue() {
+  if (typeof _sqlq === 'undefined') return;
+  if (!_sqlq.cur || _sqlq.busy || !_sqlqDirty()) return;
+  clearTimeout(_sqlqAutoTimer);
+  _sqlqAutoTimer = setTimeout(_sqlqAutoSave, _SQLQ_AUTO_DELAY);
+}
+
+function _sqlqAutoSave() {
+  if (_sqlq.busy || !_sqlq.cur || !_sqlqDirty()) return;
+  if (_sqlq.saving) { _sqlq.pending = true; return; }   // 上一次还没回来：排到它后面，不并发写
+  var name = _sqlq.cur;
+  var el = _sqlqEditor();
+  var sql = el ? String(el.value || '') : '';
+  _sqlq.saving = true;
+  _sqlqPost('/api/sql/save', {
+    name: name, old_name: '', sql: sql,
+    source_id: _dbx.src ? _dbx.src.id : '', schema: _dbx.schema || ''
+  }).then(function (d) {
+    _sqlq.saving = false;
+    // 期间切了文件 / 改了名：这次结果不认，别把新文件的快照写错
+    if (_sqlq.cur !== name) { _sqlq.pending = false; return; }
+    if (!d.ok) { _sqlq.syncKey = ''; _sqlqState('自动保存失败', 'err'); return; }
+    _sqlq.saved = sql;
+    _sqlq.savedAt = Date.now();
+    _sqlq.syncKey = '';
+    _sqlqSync();
+    // 保存期间又改过内容：再排一次（不是并发，是补存）
+    if (_sqlq.pending) { _sqlq.pending = false; _sqlqAutoQueue(); }
+  });
+}
+
+// 关标签 / 刷新时兜底：还有没落盘的改动就趁最后一下发出去（keepalive 让请求能发完）
+window.addEventListener('pagehide', function () {
+  if (!_sqlq.cur || !_sqlqDirty()) return;
+  var el = _sqlqEditor();
+  try {
+    fetch('/api/sql/save', {
+      method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: _sqlq.cur, old_name: '', sql: el ? String(el.value || '') : '',
+        source_id: _dbx.src ? _dbx.src.id : '', schema: _dbx.schema || ''
+      })
+    });
+  } catch (e) {}
+});
 
 function _sqlqHas(name) {
   for (var i = 0; i < _sqlq.files.length; i++) if (_sqlq.files[i].name === name) return true;
   return false;
+}
+
+// 文件上次落盘时间：列表里带 mtime（秒），取不到就用当前时间兜底
+function _sqlqFileMtime(name) {
+  for (var i = 0; i < _sqlq.files.length; i++) {
+    if (_sqlq.files[i].name === name) {
+      var t = Number(_sqlq.files[i].mtime || 0);
+      if (t > 0) return t > 1e12 ? t : t * 1000;   // 秒 / 毫秒都兼容
+    }
+  }
+  return Date.now();
 }
 
 function _sqlqRender() {
@@ -22927,7 +23750,7 @@ function _sqlqRender() {
 // 列表只负责刷新，不动编辑器内容
 function _sqlqLoadFiles() {
   return _dbxGet('/api/sql/files').then(function (d) {
-    if (!d.ok) { _sqlqState(d.error || '读取文件列表失败', true); return; }
+    if (!d.ok) { _sqlqState(d.error || '读取文件列表失败', 'err'); return; }
     _sqlq.files = d.files || [];
     if (_sqlq.cur && !_sqlqHas(_sqlq.cur)) _sqlq.cur = '';
     _sqlqRender();
@@ -22956,21 +23779,53 @@ function _sqlqPost(path, body) {
   });
 }
 
+// SQL 文件保存时会记下「数据源 + 库」（见 _sqlqWrite），打开文件时跟着切过去；
+// 不切的话「选文件 → 直接执行」用的还是左侧当前的库，表不在那个库就报 1146
+// （Table 'api_gate.xxx' doesn't exist），而文件里往往没写库名
+function _sqlqApplyScope(sid, schema, quiet) {
+  var src = sid ? dbxFindSource(sid) : null;
+  function tip() {
+    if (!quiet && _dbx.src) showToast('已切到 ' + _dbx.src.name + ' · ' + _dbx.schema + '（跟随 SQL 文件）');
+  }
+  // 文件记的数据源与当前不同：先换数据源，库名交给 pendingSchema 带过去
+  if (src && (!_dbx.src || _dbx.src.id !== src.id)) {
+    if (schema) _dbx.pendingSchema = schema;
+    var sel = document.getElementById('dbx-source');
+    if (sel) sel.value = src.id;
+    return Promise.resolve(dbxSelectSource(src.id)).then(tip);
+  }
+  if (!schema || schema === _dbx.schema) return Promise.resolve();
+  var list = _dbx.schemas || [];
+  // 库列表已加载但文件记的库已经不在了：保持现状，别把左侧切到一个不存在的库
+  if (list.length && list.indexOf(schema) < 0) return Promise.resolve();
+  var sel2 = document.getElementById('dbx-schema');
+  if (sel2) sel2.value = schema;
+  return Promise.resolve(dbxLoadTables(schema)).then(tip);
+}
+
 function _sqlqOpen(name) {
   return _dbxGet('/api/sql/file?name=' + encodeURIComponent(name)).then(function (d) {
     if (!d.ok) { showToast(d.error || '打开 SQL 文件失败'); _sqlqRender(); return; }
     _sqlq.cur = d.name;
     _sqlq.saved = String(d.sql || '');
+    _sqlq.savedAt = _sqlqFileMtime(d.name);
     _sqlqSetEditor(d.sql);
     try { localStorage.setItem(_SQLQ_LAST_KEY, d.name); } catch (e) {}
     _sqlqRender();
     _sqlqSync();
+    return _sqlqApplyScope(d.source_id, d.schema, false);
   });
 }
 
-// 有未保存改动时先问一句：放弃才继续，取消则把下拉恢复成当前文件
+// 有未保存改动时先处置：已有关联文件的改动本来就会自动落盘，先存再切、不打断用户；
+// 还没有文件的（草稿）仍按原样问一句，放弃才继续
 function _sqlqGuard(ok, tip) {
   if (!_sqlqDirty()) { ok(); return; }
+  if (_sqlq.cur && !_sqlq.busy) {
+    clearTimeout(_sqlqAutoTimer);
+    _sqlqWrite(_sqlq.cur, '').then(function (saved) { if (saved) ok(); else _sqlqRender(); });
+    return;
+  }
   customConfirm('未保存的修改', tip || '继续会丢弃改动。', '放弃修改', { danger: true })
     .then(function (yes) { if (yes) ok(); else _sqlqRender(); });
 }
@@ -22981,6 +23836,7 @@ function sqlFilePick(name) {
     // 切回草稿：只解除关联，内容留在编辑器里
     _sqlq.cur = '';
     _sqlq.saved = '';
+    _sqlq.savedAt = 0;
     try { localStorage.removeItem(_SQLQ_LAST_KEY); } catch (e) {}
     _sqlqRender();
     _sqlqSync();
@@ -22993,6 +23849,7 @@ function sqlFileNew() {
   _sqlqGuard(function () {
     _sqlq.cur = '';
     _sqlq.saved = '';
+    _sqlq.savedAt = 0;
     _sqlqSetEditor('');
     try { localStorage.removeItem(_SQLQ_LAST_KEY); } catch (e) {}
     _sqlqRender();
@@ -23049,6 +23906,8 @@ function sqlFileRename() {
 function _sqlqWrite(name, old) {
   var el = _sqlqEditor();
   var sql = el ? String(el.value || '') : '';
+  clearTimeout(_sqlqAutoTimer);   // 手动保存 / 改名期间别再插一次自动保存
+  _sqlq.busy = true;
   return _sqlqPost('/api/sql/save', {
     name: name,
     old_name: old || '',
@@ -23056,9 +23915,11 @@ function _sqlqWrite(name, old) {
     source_id: _dbx.src ? _dbx.src.id : '',
     schema: _dbx.schema || ''
   }).then(function (d) {
+    _sqlq.busy = false;
     if (!d.ok) { showToast(d.error || '保存失败'); _sqlqSync(); return false; }
     _sqlq.cur = d.name;
     _sqlq.saved = sql;
+    _sqlq.savedAt = Date.now();
     try { localStorage.setItem(_SQLQ_LAST_KEY, d.name); } catch (e) {}
     return _sqlqLoadFiles().then(function () {
       _sqlqSync();
@@ -23079,6 +23940,7 @@ function sqlFileDelete() {
       if (!d.ok) { showToast(d.error || '删除失败'); return; }
       _sqlq.cur = '';
       _sqlq.saved = '';
+      _sqlq.savedAt = 0;
       try { localStorage.removeItem(_SQLQ_LAST_KEY); } catch (e) {}
       showToast('已删除「' + name + '」');
       _sqlqLoadFiles();
@@ -23102,11 +23964,14 @@ function _sqlqBoot() {
       if (!d.ok) { try { localStorage.removeItem(_SQLQ_LAST_KEY); } catch (e) {} _sqlqSync(); return; }
       _sqlq.cur = d.name;
       _sqlq.saved = String(d.sql || '');
+      _sqlq.savedAt = _sqlqFileMtime(d.name);
       var el = _sqlqEditor();
       // 编辑器里还留着上次没存进文件的草稿（浏览器恢复的）：保留草稿，只把文件挂上去
       if (!el || !String(el.value || '').trim()) _sqlqSetEditor(d.sql);
       _sqlqRender();
       _sqlqSync();
+      // 进来就恢复上次的 SQL 文件：库也一起恢复，否则直接点执行会打到上次会话的库
+      return _sqlqApplyScope(d.source_id, d.schema, true);
     });
   });
 }
@@ -23122,17 +23987,35 @@ window.addEventListener('keydown', function (e) {
   sqlFileSave();
 });
 
+// 底部的「执行」：有选区就跑选区，否则跑全部
 function dbxRun() {
+  var picked = _dbxSqlRunText();
+  return _dbxRunText(picked.text, { partial: picked.partial });
+}
+
+// 语句左侧的 ▶：只执行这一条（索引对应 _dbxStmtSpans 的顺序）
+function dbxRunStmtAt(i) {
+  var el = _sqlqEditor();
+  if (!el) return;
+  var st = _dbxStmtSpans(el.value)[i];
+  if (!st) return;
+  return _dbxRunText(st.text, { label: '第 ' + (i + 1) + ' 条' });
+}
+
+// 真正的执行入口：顶部执行按钮 / 行内三角都走这里
+// opts.partial = 执行选区；opts.label = 提示前缀（如「第 2 条」）
+function _dbxRunText(sql, opts) {
+  opts = opts || {};
   if (!_dbx.src) { showToast('请先选择数据源'); return; }
   dbxAcClose();
-  var picked = _dbxSqlRunText();
-  var sql = picked.text;
+  sql = String(sql || '');
+  var prefix = opts.partial ? '执行选中 · ' : (opts.label ? opts.label + ' · ' : '');
   if (!sql) { dbxSetHint('请输入 SQL 语句', true); return; }
   // 整段只有注释时直接拦下，不发给数据库
   if (!_dbxSplitStmts(sql).length) {
     dbxSqlPage('result', true);   // 没语句也要让用户看到原因，直接切结果页
     var box0 = document.getElementById('dbx-result');
-    var msg0 = picked.partial
+    var msg0 = opts.partial
       ? '选中的内容只有注释，没有可执行的语句；取消选区可执行全部'
       : '没有可执行的语句（注释不算语句）';
     box0.className = 'dbx-result';
@@ -23143,10 +24026,10 @@ function dbxRun() {
   }
   // 写语句直接走写入流程，统一一个「执行」按钮：读语句跑查询，写语句先确认
   if (_dbxIsWrite(sql)) {
-    return dbxRunWrite(picked);
+    return dbxRunWrite({ text: sql, partial: !!opts.partial, label: opts.label || '' });
   }
   dbxSqlPage('result', true);   // 点执行就直接带到结果页，不用再手动切页签
-  dbxSetHint(picked.partial ? '执行选中…' : '执行中…');
+  dbxSetHint(prefix + '执行中…');
   var box = document.getElementById('dbx-result');
   box.className = 'dbx-result';
   box.innerHTML = '<div class="dbx-result-empty">执行中…</div>';
@@ -23158,6 +24041,7 @@ function dbxRun() {
       return;
     }
     _dbx.result = d;
+    _dbx.rsOrigin = { id: _dbx.src.id, schema: _dbx.schema };   // 刷新结果集时沿用这次连的库
     dbxRenderResults(d);
     var sets = (d.results || []).length;
     var qNotes = (d.notes && d.notes.length) ? ' · 兼容处理：' + d.notes.join('；') : '';
@@ -23168,15 +24052,16 @@ function dbxRun() {
     } else {
       qHint = '共 ' + d.count + ' 行 · ' + d.elapsed_ms + ' ms' + (d.truncated ? ' · 已截断到前 ' + d.count + ' 行' : '');
     }
-    dbxSetHint((picked.partial ? '执行选中 · ' : '') + qHint + qNotes);
+    dbxSetHint(prefix + qHint + qNotes);
   });
 }
 
 var _DBX_WRITE_RE = /^\s*(?:insert|update|delete|replace|create|alter|drop|truncate|rename|vacuum|attach|detach)\b|^\s*pragma\s+[\w]+\s*=/i;
 
-// 按分号切语句：跳过字符串/注释，CREATE TRIGGER 这类 BEGIN...END 块不拆开
-function _dbxSplitStmts(sql) {
-  var s = String(sql || ''), out = [], buf = '';
+// 按分号切语句：跳过字符串/注释，CREATE TRIGGER 这类 BEGIN...END 块不拆开。
+// 同时给出每条语句在原串里的 [start, end)，编辑器据此在语句行首画「行内执行」三角
+function _dbxStmtSpans(sql) {
+  var s = String(sql || ''), out = [], buf = '', bufStart = 0;
   var i = 0, n = s.length, quote = null;
   function commentless(t) {
     return t.replace(/--[^\n]*/g, ' ').replace(/#[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
@@ -23199,10 +24084,15 @@ function _dbxSplitStmts(sql) {
   function push() {
     var t = buf.trim();
     // 纯注释段不算一条语句（否则条数统计和多语句执行对不上）
-    if (t && commentless(t).trim()) out.push(t);
+    if (t && commentless(t).trim()) {
+      var lead = buf.length - buf.replace(/^\s+/, '').length;
+      out.push({ start: bufStart + lead, end: bufStart + lead + t.length, text: t });
+    }
     buf = '';
   }
   while (i < n) {
+    // buf 为空说明下一条语句从当前下标开始，记下来供 push 算位置
+    if (!buf.length) bufStart = i;
     var ch = s[i];
     if (quote) {
       buf += ch;
@@ -23238,6 +24128,10 @@ function _dbxSplitStmts(sql) {
   return out;
 }
 
+function _dbxSplitStmts(sql) {
+  return _dbxStmtSpans(sql).map(function (x) { return x.text; });
+}
+
 function _dbxIsWrite(sql) {
   // 允许一次执行多条语句：只要其中有一条是写语句，就走写入流程
   var parts = _dbxSplitStmts(sql);
@@ -23262,11 +24156,13 @@ async function dbxRunWrite(picked) {
   var stmts = _dbxSplitStmts(sql);
   if (!stmts.length) { dbxSetHint('没有可执行的语句（注释不算语句）', true); return; }
   var cntText = stmts.length > 1 ? ('，共 <b>' + stmts.length + '</b> 条语句') : '';
+  // 提示前缀：单条执行时告诉用户跑的是哪一条
+  var wlabel = picked.partial ? '执行选中 · ' : (picked.label ? picked.label + ' · ' : '');
   var ok = await customConfirm(picked.partial ? '执行选中的写入' : '执行写入',
     '将在数据源 <strong>' + escHtml(_dbx.src.name) + '</strong> 上执行' + cntText + '：<br><code style="font-size:12px;word-break:break-all;white-space:pre-wrap;display:block;max-height:220px;overflow:auto">' +
     escHtml(sql.length > 2000 ? sql.slice(0, 2000) + ' …（仅预览前 2000 字）' : sql) + '</code>', '执行');
   if (!ok) return;
-  dbxSetHint('执行中…');
+  dbxSetHint(wlabel + '执行中…');
   _dbxPost('/api/db/execute', { source_id: _dbx.src.id, schema: _dbx.schema, sql: sql }).then(function (d) {
     if (!d.ok) {
       dbxSetHint('写入失败：' + (d.error || ''), true);
@@ -23276,8 +24172,8 @@ async function dbxRunWrite(picked) {
     var extra = (d.rowcount === null || d.rowcount === undefined) ? '' : ' · 影响 ' + d.rowcount + ' 行';
     if (d.statements > 1) extra += ' · ' + d.statements + ' 条语句';
     var wNotes = (d.notes && d.notes.length) ? ' · 兼容处理：' + d.notes.join('；') : '';
-    dbxSetHint((picked.partial ? '执行选中 · ' : '') + '写入成功' + extra + wNotes);
-    showToast((picked.partial ? '执行选中 · ' : '') + '写入成功' + extra);
+    dbxSetHint(wlabel + '写入成功' + extra + wNotes);
+    showToast(wlabel + '写入成功' + extra);
     // 表结构可能变了（造表/删表/改字段），重新拉表；保持当前页签，不打断连续写 SQL
     var keep = _dbx.sel;
     var tab = _dbx.tab;
@@ -23878,15 +24774,76 @@ var _DBX_FMT_KW = ['SELECT', 'DISTINCT', 'AS', 'AND', 'OR', 'ON', 'NOT', 'IN', '
   'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'ASC', 'DESC', 'OFFSET', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'WITH',
   'BY', 'TABLE', 'INDEX', 'PRIMARY KEY', 'DEFAULT'];
 
-function _dbxFmt(sql) {
+// 注释里被注释掉的 SQL 也要格式化，但只动「-- / # 行注释 + 注释体以语句关键字开头」的；
+// 中文说明、块注释一律原样保留（注释里的字不能当成 SQL 改大小写）
+var _DBX_FMT_STMT_RE = /^(?:select|insert|update|delete|replace|with|create|alter|drop|truncate|show|desc|describe|explain|use|set|call|begin|commit|rollback|start|pragma|analyze|optimize|rename|load|grant|revoke)\b/i;
+
+// 注释体像不像在写 SQL：去掉引号里的内容后还剩中文的，当成说明文字，不能当 SQL 改大小写
+// （「-- select 还是 update？我不确定」这种不能被折行成两条注释）
+function _dbxFmtIsNote(s) {
+  return /[\u4e00-\u9fff]/.test(String(s).replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`/g, ''));
+}
+
+// 去掉行首的注释符，取出注释体
+function _dbxFmtCommentBody(line) {
+  return String(line).replace(/^[ \t]*(?:--|#)\s*/, '');
+}
+
+function _dbxFmtComment(cmt, depth) {
+  var c = String(cmt || '');
+  if (depth || !/^(--|#)/.test(c)) return c;
+  var lines = c.split('\n');
+  var mark = (c.charAt(0) === '#' ? '#' : '--') + ' ';
+  var out = [], i = 0;
+  while (i < lines.length) {
+    var body = _dbxFmtCommentBody(lines[i]).trim();
+    // 中文说明、不像语句（含块注释）的行原样留着，不能把注释里的字当 SQL 改大小写
+    if (_dbxFmtIsNote(body) || !_DBX_FMT_STMT_RE.test(body)) { out.push(lines[i]); i++; continue; }
+    // 被注释掉的语句可能被拆成好几行注释（手动换行，或用 Ctrl+/ 整段注释掉格式化过的语句）：
+    // 行尾还没出现分号说明这句没写完，续行也归它；只格式化首行会留下「首行大写、续行原样」的半截效果
+    var sqlLines = [];
+    while (i < lines.length) {
+      sqlLines.push(_dbxFmtCommentBody(lines[i]).trim());
+      i++;
+      if (/;\s*$/.test(sqlLines[sqlLines.length - 1])) break;
+      if (i >= lines.length || _dbxFmtIsNote(_dbxFmtCommentBody(lines[i]))) break;
+    }
+    // 逐条格式化：一段注释里可能连着好几条语句，整体当作一条会把后一条接到前一条末尾
+    var joined = sqlLines.join(' '), spans = _dbxStmtSpans(joined);
+    for (var s = 0; s < spans.length; s++) {
+      var text = spans[s].text;
+      var k = spans[s].end;
+      while (k < joined.length && /\s/.test(joined.charAt(k))) k++;
+      if (joined.charAt(k) === ';') text += ';';
+      var fmt = _dbxFmt(text, 1).split('\n');
+      for (var j = 0; j < fmt.length; j++) if (fmt[j].trim()) out.push(mark + fmt[j]);
+    }
+  }
+  return out.join('\n');
+}
+
+function _dbxFmt(sql, depth) {
   if (!sql || !sql.trim()) return sql;
-  // 注释先摘出来换成占位符：注释里的关键字不能改大小写，行注释后的内容也不能被压进注释
-  var marks = [];
-  var masked = String(sql).replace(
-    /('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`)|(--[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g,
-    function (m, lit, cmt) {
+  var src = String(sql), marks = [], kinds = [];
+  // 注释先摘出来换成占位符：注释里的关键字不能改大小写。
+  // 同时按它原来是不是独占一行给占位符打标记，恢复时才断得对：
+  // 以前不管三七二十一往后补一个换行，空白折叠先把换行吃掉，
+  // 注释行后面的 SQL 就拓进注释里，语句中间还会凭空多出空行
+  // 行注释允许连着好几行一起匹配（中间不能隔空行）：被注释掉的语句和被注释掉的续行要当一个整体看
+  var masked = src.replace(
+    /('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`)|((?:--[^\n]*|#[^\n]*)(?:\n[ \t]*(?:--[^\n]*|#[^\n]*))*|\/\*[\s\S]*?\*\/)/g,
+    function (m, lit, cmt, off) {
       if (lit) return lit;
-      marks.push(cmt);
+      marks.push(_dbxFmtComment(cmt, depth));
+      var isLine = /^(--|#)/.test(cmt);
+      var ls = src.lastIndexOf('\n', off - 1) + 1;
+      var le = src.indexOf('\n', off + m.length);
+      var beforeBlank = !src.slice(ls, off).trim();
+      var afterBlank = !src.slice(off + m.length, le < 0 ? src.length : le).trim();
+      // 0=留在原处 1=独占一行（前后都断行） 2=跟在代码后面（只补换行）
+      if (beforeBlank && (isLine || afterBlank)) kinds.push(1);
+      else if (isLine) kinds.push(2);
+      else kinds.push(0);
       return '\u0001' + (marks.length - 1) + '\u0001';
     });
   // 长的关键字排在前面（否则 LEFT JOIN 会被 JOIN 先拆开），并合成单个正则一次替换
@@ -23898,29 +24855,122 @@ function _dbxFmt(sql) {
   }
   var kwRe = new RegExp('\\b(?:' + alternation(_DBX_FMT_KW) + ')\\b', 'gi');
   var nlRe = new RegExp('\\s*\\b(?:' + alternation(_DBX_FMT_NL) + ')\\b', 'gi');
-  var parts = masked.split(/('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`)/);
-  for (var i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) continue; // 字符串/标识符字面量保持原样
-    var seg = parts[i].replace(/\s+/g, ' ');
-    seg = seg.replace(kwRe, function (m) { return m.replace(/\s+/g, ' ').toUpperCase(); });
-    seg = seg.replace(nlRe, function (m) { return '\n' + m.trim().replace(/\s+/g, ' ').toUpperCase(); });
-    seg = seg.replace(/\n{2,}/g, '\n');
-    if (i === 0) seg = seg.replace(/^\n+/, ''); // 只在开头去换行，否则会粘到前一个字面量后面
-    parts[i] = seg;
+  // 占位符单独成段：只对代码段做大小写与断行，注释不参与空白折叠
+  var chunks = masked.split(/(\u0001\d+\u0001)/);
+  var buf = '', lineStart = true;
+  for (var i = 0; i < chunks.length; i++) {
+    if (/^\u0001\d+\u0001$/.test(chunks[i])) {
+      var kd = kinds[+chunks[i].replace(/\u0001/g, '')];
+      if (kd !== 0) {
+        buf = buf.replace(/[ \t]+$/, '');   // 断行前不留尾随空格
+        // 行尾注释跟在同一行代码后面：`1-- 说明` 在 MySQL 里不算注释，注释符前必须留一个空格
+        if (kd === 2 && buf && !/\n$/.test(buf)) buf += ' ';
+        lineStart = true;
+      }
+      buf += chunks[i];
+      continue;
+    }
+    var parts = chunks[i].split(/('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`)/);
+    for (var k = 0; k < parts.length; k++) {
+      if (k % 2 === 1) {   // 字符串/标识符字面量保持原样
+        buf += parts[k];
+        lineStart = false;
+        continue;
+      }
+      var seg = parts[k].replace(/\s+/g, ' ');
+      if (lineStart) seg = seg.replace(/^ +/, '');   // 注释换行后不该再顶着一个空格
+      seg = seg.replace(kwRe, function (m) { return m.replace(/\s+/g, ' ').toUpperCase(); });
+      seg = seg.replace(nlRe, function (m) { return '\n' + m.trim().replace(/\s+/g, ' ').toUpperCase(); });
+      buf += seg;
+      lineStart = seg.charAt(seg.length - 1) === '\n';
+    }
   }
-  var out = parts.join('').replace(/\n{2,}/g, '\n').trim();
-  out = out.replace(/\u0001(\d+)\u0001/g, function (_, k) {
-    var c = marks[+k] || '';
-    // 行注释必须独占一行，否则后面的 SQL 会被它吃掉
-    return /^(--|#)/.test(c) ? c.replace(/\s+$/, '') + '\n' : c;
+  var out = buf.replace(/\u0001(\d+)\u0001/g, function (_, k) {
+    var txt = marks[+k] || '';
+    if (kinds[+k] === 1) return '\n' + txt + '\n';
+    if (kinds[+k] === 2) return txt + '\n';
+    return txt;
   });
-  return out.replace(/\n{3,}/g, '\n\n').trim();
+  // 语句内部的空行一律不留（语句之间的空行由 _dbxFmtMany 统一补）
+  return out.replace(/\n{2,}/g, '\n').trim();
+}
+
+// 整行注释（-- / # / 块注释）都算注释行
+function _dbxFmtCmtLine(ln) {
+  return /^(?:--|#|\/\*|\*)/.test(String(ln).replace(/^[ \t]+/, ''));
+}
+
+// 往上找紧邻的整行注释块（遇到空行就断开）；块注释中间的文字不以 * 开头，靠 */ 倒推回来
+function _dbxFmtCmtBlock(out) {
+  var rows = [], inBlock = false;
+  for (var i = out.length - 1; i >= 0; i--) {
+    var t = String(out[i]).trim();
+    if (!t) break;
+    if (inBlock) {
+      rows.unshift(t);
+      if (t.indexOf('/*') === 0) inBlock = false;
+      continue;
+    }
+    var endsBlock = /\*\/$/.test(t) && t.indexOf('/*') < 0;
+    if (!endsBlock && !_dbxFmtCmtLine(t)) break;
+    rows.unshift(t);
+    if (endsBlock) inBlock = true;
+  }
+  return rows;
+}
+
+// 注释块与下面的代码之间、相邻两条被注释语句之间留一个空行：
+// 一堆被注释掉的语句和正式语句挤在一起时，看不清哪句是哪句；
+// 单行中文说明（注释它下面那句的）仍紧贴，不拉开
+function _dbxFmtGaps(sql) {
+  var lines = String(sql || '').split('\n'), out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var t = lines[i].trim();
+    if (!t) { out.push(lines[i]); continue; }
+    var prev = out.length ? out[out.length - 1] : '';
+    if (_dbxFmtCmtLine(t)) {
+      // 注释块前面（代码行或上一条被注释语句）已经以分号收尾：另起一段。
+      // 否则「先写查询、再把旧查询注释掉放到下面」会黏在上一句末尾，糊成一团
+      // 中文说明里带分号（如「-- 1. 查全部;」）不算语句结束，不拉开
+      var pb = prev ? _dbxFmtCommentBody(prev) : '';
+      if (/;\s*$/.test(pb) && !(_dbxFmtCmtLine(prev) && _dbxFmtIsNote(pb))) out.push('');
+      out.push(lines[i]);
+      continue;
+    }
+    var block = _dbxFmtCmtBlock(out);
+    if (block.length && (block.length > 1 || _DBX_FMT_STMT_RE.test(_dbxFmtCommentBody(block[0])))) out.push('');
+    out.push(lines[i]);
+  }
+  return out.join('\n').replace(/[ \t]+$/gm, '');
+}
+
+// 多语句格式化：按分号逐条格式化，再用空行隔开
+// （单走 _dbxFmt 会把语句间的换行压成空格，后一条的 SELECT 就贴到前一条末尾）
+function _dbxFmtMany(src) {
+  var spans = _dbxStmtSpans(src);
+  if (spans.length < 2) return _dbxFmtGaps(_dbxFmt(src));
+  var pieces = [], lastEnd = 0;
+  for (var i = 0; i < spans.length; i++) {
+    var body = _dbxFmt(spans[i].text);
+    if (!body) continue;
+    // 原文这条后面跟了分号就补回（_dbxStmtSpans 按分号切，切出来的 text 不含分号）
+    var k = spans[i].end;
+    while (k < src.length && /\s/.test(src.charAt(k))) k++;
+    if (src.charAt(k) === ';') body += ';';
+    pieces.push(body);
+    lastEnd = spans[i].end;
+  }
+  // 最后一条分号后面可能还挂着独立注释（_dbxStmtSpans 会把纯注释段丢掉）
+  var tail = src.slice(lastEnd).replace(/^\s*;/, '').trim();
+  if (tail) pieces.push(_dbxFmt(tail));
+  return _dbxFmtGaps(pieces.join('\n\n'));
 }
 
 function dbxFormatSql() {
   var el = document.getElementById('dbx-sql');
   dbxAcClose();
-  var out = _dbxFmt(el.value);
+  if (!el.value.trim()) { dbxSetHint('编辑器里还没有 SQL', true); return; }
+  var out = _dbxFmtMany(el.value);
   if (!out) { dbxSetHint('编辑器里还没有 SQL', true); return; }
   if (out === el.value) { showToast('已经是格式化后的样子了'); return; }
   el.value = out;
@@ -24340,6 +25390,24 @@ async function loadWorkbench() {
   renderTodos();
 }
 
+// 工具条补充悬停说明：Quill 按钮只有图标没有 title，分组多了以后不好认
+function _noteToolbarTitles() {
+  var tb = document.querySelector('.wb-note-editor-wrap .ql-toolbar');
+  if (!tb) return;
+  var tips = { 'ql-bold': '加粗 Ctrl+B', 'ql-italic': '斜体 Ctrl+I', 'ql-underline': '下划线 Ctrl+U', 'ql-strike': '删除线',
+    'ql-color': '字体颜色', 'ql-background': '背景色', 'ql-blockquote': '引用', 'ql-code-block': '代码块',
+    'ql-link': '插入链接', 'ql-image': '插入图片', 'ql-clean': '清除格式' };
+  Object.keys(tips).forEach(function(cls) {
+    tb.querySelectorAll('button.' + cls).forEach(function(b) { b.title = tips[cls]; });
+  });
+  tb.querySelectorAll('button.ql-list[value="ordered"]').forEach(function(b) { b.title = '有序列表'; });
+  tb.querySelectorAll('button.ql-list[value="bullet"]').forEach(function(b) { b.title = '无序列表'; });
+  var hd = tb.querySelector('.ql-picker.ql-header .ql-picker-label');
+  if (hd) hd.title = '段落样式';
+  var sz = tb.querySelector('.ql-picker.ql-size .ql-picker-label');
+  if (sz) sz.title = '字号';
+}
+
 async function loadNotesTab() {
   // 初始化 Quill 富文本编辑器（仅首次）；Quill 加载失败时降级为纯文本 textarea
   if (!_noteQuill && !_notePlainMode) {
@@ -24375,6 +25443,7 @@ async function loadNotesTab() {
         }
       });
       _noteQuill.on('text-change', function() { onNoteContentChange(); });
+      _noteToolbarTitles();
     }
   }
 
@@ -26894,13 +27963,13 @@ function renderCaptureList() {
     var collapsed = (_capHostFolded[host] !== undefined) ? _capHostFolded[host] : (!_capExpandedHosts[host] && !anyFilter && !H.pausedCount);
     // 行首只有「展开三角 12px + 名称」：不用 emoji 图标与竖引导线，层级只靠缩进阶梯 + 字重表达
     var h = '<div class="cap-group-head" data-host="' + escHtml(host) + '" data-collapsed="' + (collapsed ? '1' : '0') + '" onclick="toggleCapGroup(this.dataset.host)" '
-      + 'style="display:flex;align-items:center;height:26px;padding:0 8px 0 4px;background:#fff;border-bottom:1px solid #e2e8f0;cursor:pointer;font-size:12px;user-select:none">'
-      + '<span style="flex-shrink:0;width:12px;text-align:center;color:#aeb9c8;font-size:10px">' + (collapsed ? '▸' : '▾') + '</span>'
+      + 'style="display:flex;align-items:center;height:' + _capSz(2.08) + ';padding:0 8px 0 4px;background:#fff;border-bottom:1px solid #e2e8f0;cursor:pointer;font-size:' + _capSz(.96) + ';user-select:none">'
+      + '<span style="flex-shrink:0;width:12px;text-align:center;color:#aeb9c8;font-size:' + _capSz(.8) + '">' + (collapsed ? '▸' : '▾') + '</span>'
       + '<span style="flex:1;min-width:0;padding-left:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;color:#0f172a" title="' + escHtml(host) + '">' + escHtml(host)
       // 计数/徽标内联在名称后：紧跟着服务名，不再被推到行尾（视线不用横跳）
-      + (H.pausedCount ? '<span style="display:inline-block;margin-left:7px;font-size:11px;font-weight:600;color:#b45309">' + H.pausedCount + ' 暂停</span>' : '')
-      + (H.mockCount ? '<span style="display:inline-block;margin-left:7px;font-size:11px;font-weight:600;color:#6d28d9">' + H.mockCount + ' Mock</span>' : '')
-      + '<span style="margin-left:7px;font-size:11px;font-weight:400;color:var(--text3)">' + H.count + ' 个请求</span>'
+      + (H.pausedCount ? '<span style="display:inline-block;margin-left:7px;font-size:' + _capSz(.88) + ';font-weight:600;color:#b45309">' + H.pausedCount + ' 暂停</span>' : '')
+      + (H.mockCount ? '<span style="display:inline-block;margin-left:7px;font-size:' + _capSz(.88) + ';font-weight:600;color:#6d28d9">' + H.mockCount + ' Mock</span>' : '')
+      + '<span style="margin-left:7px;font-size:' + _capSz(.88) + ';font-weight:400;color:var(--text3)">' + H.count + ' 个请求</span>'
       + '</span>';
     h += '</div>';
     if (!collapsed) h += renderCapNode(host, H, '', 0, mixed);
@@ -26944,6 +28013,9 @@ function _capSplitPath(f) {
   return { segs: segs, query: q >= 0 ? p.slice(q) : '' };
 }
 
+// 抓包页尺寸都按「抓包字号」（--cap-fs，默认 12.5px）等比算：字号一改，行高 / 列宽跟着走，不会溢出
+function _capSz(k) { return 'calc(var(--cap-fs, 12.5px) * ' + k + ')'; }
+
 // 折叠 / 展开路径文件夹
 function toggleCapNode(key) {
   if (_capCollapsedNodes[key]) delete _capCollapsedNodes[key];
@@ -26979,11 +28051,11 @@ function renderCapNode(host, node, prefix, depth, mixed) {
     // 本节点在树中处于 depth+1 层（depth 是「渲染其父节点内容」的上下文层），故 pad 按 depth+1 算
     var pad = 4 + (depth + 1) * 12;
     h += '<div class="cap-node-head" data-key="' + escHtml(key) + '" onclick="toggleCapNode(this.dataset.key)" '
-      + 'style="display:flex;align-items:center;height:24px;padding:0 8px 0 ' + pad + 'px;background:#fff;cursor:pointer;font-size:12px;user-select:none">'
-      + '<span style="flex-shrink:0;width:12px;text-align:center;color:#aeb9c8;font-size:10px">' + (collapsed ? '▸' : '▾') + '</span>'
+      + 'style="display:flex;align-items:center;height:' + _capSz(1.92) + ';padding:0 8px 0 ' + pad + 'px;background:#fff;cursor:pointer;font-size:' + _capSz(.96) + ';user-select:none">'
+      + '<span style="flex-shrink:0;width:12px;text-align:center;color:#aeb9c8;font-size:' + _capSz(.8) + '">' + (collapsed ? '▸' : '▾') + '</span>'
       + '<span style="flex:1;min-width:0;padding-left:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:#475569" title="' + escHtml(path) + '">' + escHtml(label)
       // 子项计数内联在文件夹名后：紧贴层级阶梯，不飘到行尾
-      + '<span style="margin-left:6px;font-size:10.5px;font-weight:400;color:#a8b2c1">' + child.count + '</span>'
+      + '<span style="margin-left:6px;font-size:' + _capSz(.84) + ';font-weight:400;color:#a8b2c1">' + child.count + '</span>'
       + '</span>';
     h += '</div>';
     if (!collapsed) h += renderCapNode(host, child, path, depth + 1, mixed);
@@ -27005,19 +28077,19 @@ function renderCapRow(f, showSource, lvl, displayPath) {
   var mockMark = (f.mock && f.mock.id) ? 'box-shadow:inset 3px 0 0 #8b5cf6;' : '';
   var bpMark = isBp ? 'box-shadow:inset 3px 0 0 #f59e0b;' : '';
   return '<div class="cap-row' + (f.id === _capSelId ? ' cap-row-sel' : '') + '" data-id="' + escHtml(f.id) + '"' + (isBp ? ' data-bp="1"' : '') + ' onclick="selectCaptureFlow(this.dataset.id)" '
-    + 'style="display:flex;align-items:center;height:24px;padding:0 8px 0 ' + pad + 'px;cursor:pointer;font-size:12px;' + mockMark + bpMark + sel + '">'
+    + 'style="display:flex;align-items:center;height:' + _capSz(1.92) + ';padding:0 8px 0 ' + pad + 'px;cursor:pointer;font-size:' + _capSz(.96) + ';' + mockMark + bpMark + sel + '">'
     // 不展示 GET/POST：列表只回答“是哪个接口”，方法/状态码都在右侧详情看
-    // 路径撑满剩余宽度（长 URL 省略），大小/耗时/时间作为右对齐固定列贴行尾
+    // 路径撑满剩余宽度（长 URL 省略），大小/耗时/时间作为右对齐固定列贴行尾（列宽也跟着字号缩放）
     + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#334155" title="' + escHtml((f.method ? f.method + ' ' : '') + (f.host || '') + (f.path || '/')) + '">' + escHtml(displayPath || f.path || '/') + '</span>'
     + (isBp ? _capRowBpRemain(f) : '')
-    + (isPending ? '<span style="flex-shrink:0;margin-left:6px;font-size:10px;background:#dbeafe;color:#1d4ed8;border-radius:8px;padding:0 6px;line-height:16px;font-weight:600" title="请求已进入引擎，等待响应返回（弱网延迟 / 限速期间也实时展示）">进行中</span>' : '')
-    + ((f.replay && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:10px;background:#dbeafe;color:#2563eb;border-radius:8px;padding:0 6px;line-height:16px;font-weight:600">重放</span>' : '')
-    + ((f.mock && f.mock.id && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:10px;color:#6d28d9;font-weight:600" title="' + escHtml((f.mock.name ? f.mock.name + '：' : '') + '响应由改包 Mock 直接返回，未发真实请求') + '">MOCK</span>' : '')
-    + ((f.ws && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:10px;background:#e0f2fe;color:#0369a1;border-radius:8px;padding:0 6px;line-height:16px;font-weight:600" title="WebSocket 连接：已聚合 ' + ((f.ws && f.ws.count) || 0) + ' 条消息（点选查看）">WS</span>' : '')
-    + ((f.loss && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:10px;background:#fee2e2;color:#dc2626;border-radius:8px;padding:0 6px;line-height:16px;font-weight:600" title="弱网丢包：连接被掐断，请求未到达服务器">丢包</span>' : '')
-    + '<span style="flex-shrink:0;margin-left:6px;width:40px;text-align:right;color:var(--text3);font-size:11px">' + fmtCapSize(f.size) + '</span>'
-    + '<span style="flex-shrink:0;margin-left:6px;width:46px;text-align:right;color:var(--text3);font-size:11px">' + (f.duration_ms != null ? f.duration_ms + 'ms' : '-') + '</span>'
-    + '<span style="flex-shrink:0;margin-left:6px;width:50px;text-align:right;color:#aab4c2;font-size:10.5px">' + escHtml(f.time || '') + '</span>'
+    + (isPending ? '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.8) + ';background:#dbeafe;color:#1d4ed8;border-radius:8px;padding:0 6px;line-height:' + _capSz(1.28) + ';font-weight:600" title="请求已进入引擎，等待响应返回（弱网延迟 / 限速期间也实时展示）">进行中</span>' : '')
+    + ((f.replay && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.8) + ';background:#dbeafe;color:#2563eb;border-radius:8px;padding:0 6px;line-height:' + _capSz(1.28) + ';font-weight:600">重放</span>' : '')
+    + ((f.mock && f.mock.id && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.8) + ';color:#6d28d9;font-weight:600" title="' + escHtml((f.mock.name ? f.mock.name + '：' : '') + '响应由改包 Mock 直接返回，未发真实请求') + '">MOCK</span>' : '')
+    + ((f.ws && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.8) + ';background:#e0f2fe;color:#0369a1;border-radius:8px;padding:0 6px;line-height:' + _capSz(1.28) + ';font-weight:600" title="WebSocket 连接：已聚合 ' + ((f.ws && f.ws.count) || 0) + ' 条消息（点选查看）">WS</span>' : '')
+    + ((f.loss && !isBp) ? '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.8) + ';background:#fee2e2;color:#dc2626;border-radius:8px;padding:0 6px;line-height:' + _capSz(1.28) + ';font-weight:600" title="弱网丢包：连接被掐断，请求未到达服务器">丢包</span>' : '')
+    + '<span style="flex-shrink:0;margin-left:6px;width:' + _capSz(3.2) + ';text-align:right;color:var(--text3);font-size:' + _capSz(.88) + '">' + fmtCapSize(f.size) + '</span>'
+    + '<span style="flex-shrink:0;margin-left:6px;width:' + _capSz(3.68) + ';text-align:right;color:var(--text3);font-size:' + _capSz(.88) + '">' + (f.duration_ms != null ? f.duration_ms + 'ms' : '-') + '</span>'
+    + '<span style="flex-shrink:0;margin-left:6px;width:' + _capSz(4) + ';text-align:right;color:#aab4c2;font-size:' + _capSz(.84) + '">' + escHtml(f.time || '') + '</span>'
     + '</div>';
 }
 
@@ -27025,7 +28097,7 @@ function renderCapRow(f, showSource, lvl, displayPath) {
 function _capRowBpRemain(f) {
   var bp = _capPendingById[f.id];
   if (!bp) return '';
-  return '<span style="flex-shrink:0;margin-left:6px;font-size:11px;color:var(--text3);white-space:nowrap" title="超时未处理将自动放行"><b data-bp-remain="' + escHtml(f.id) + '" style="' + (bp.remain <= 60 ? 'color:var(--red)' : '') + '">' + _capFmtRemain(bp.remain) + '</b></span>';
+  return '<span style="flex-shrink:0;margin-left:6px;font-size:' + _capSz(.88) + ';color:var(--text3);white-space:nowrap" title="超时未处理将自动放行"><b data-bp-remain="' + escHtml(f.id) + '" style="' + (bp.remain <= 60 ? 'color:var(--red)' : '') + '">' + _capFmtRemain(bp.remain) + '</b></span>';
 }
 
 // ── 流量行右键菜单（复制接口 / 完整请求 / 请求参数 / 返回结果 + 添加断点）──
@@ -27311,37 +28383,37 @@ function renderCaptureDetail(f) {
   } else {
     urlHtml = escHtml(url);
   }
-  h += '<div class="cap-url-line" onclick="capCopyUrlLine(this)" style="word-break:break-all;font-size:13px;line-height:1.6;font-weight:600;color:var(--text)">'
+  h += '<div class="cap-url-line" onclick="capCopyUrlLine(this)" style="word-break:break-all;font-size:' + _capSz(1.04) + ';line-height:1.6;font-weight:600;color:var(--text)">'
     + '<span style="color:' + (_capMethodColor[f.method] || '#64748b') + '">' + escHtml(f.method || '') + '</span> '
     + urlHtml
     + '</div>';
-  h += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:9px;color:var(--text2);font-size:12px">'
-    + '<span id="cap-detail-mock-badge" style="display:none;padding:0 8px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.4px;background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;line-height:18px;cursor:default">⚡ MOCK</span>'
-    + (f.replay ? '<span style="padding:0 8px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.4px;background:#dbeafe;color:#2563eb;border:1px solid #bfdbfe;line-height:18px;cursor:default">🔁 重放</span>' : '')
+  h += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:9px;color:var(--text2);font-size:' + _capSz(.96) + '">'
+    + '<span id="cap-detail-mock-badge" style="display:none;padding:0 8px;border-radius:4px;font-size:' + _capSz(.88) + ';font-weight:700;letter-spacing:.4px;background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;line-height:' + _capSz(1.44) + ';cursor:default">⚡ MOCK</span>'
+    + (f.replay ? '<span style="padding:0 8px;border-radius:4px;font-size:' + _capSz(.88) + ';font-weight:700;letter-spacing:.4px;background:#dbeafe;color:#2563eb;border:1px solid #bfdbfe;line-height:' + _capSz(1.44) + ';cursor:default">🔁 重放</span>' : '')
     + '<span>状态 <b style="color:' + stColor + '">' + escHtml(stText) + '</b></span>'
     + '<span>大小 <b style="color:var(--text)">' + fmtCapSize(f.size) + '</b></span>'
     + '<span>耗时 <b style="color:var(--text)">' + (f.duration_ms != null ? f.duration_ms + ' ms' : '-') + '</b></span>'
     + (f.ws ? '<span>WS 消息 <b style="color:var(--text)">' + ((f.ws && f.ws.count) || 0) + '</b> 条</span>' : '')
     + (f._bpSynthetic
         ? '<span style="color:var(--text3)" title="挂起流量尚未上报：来源与客户端信息在放行后可见">来源 -</span>'
-        : '<span class="cap-dev-info" onclick="capEditDevice()">' + (_capFlowSource(f) === 'web' ? '💻 Web' : '📱 手机') + (f.device ? ' · ' + escHtml(f.device) : '') + ' <span style="opacity:.5;font-size:11px">✎</span></span>'
+        : '<span class="cap-dev-info" onclick="capEditDevice()">' + (_capFlowSource(f) === 'web' ? '💻 Web' : '📱 手机') + (f.device ? ' · ' + escHtml(f.device) : '') + ' <span style="opacity:.5;font-size:' + _capSz(.88) + '">✎</span></span>'
           + (f.os ? '<span>' + escHtml(f.os) + '</span>' : '')
           + '<span>' + escHtml(f.client || '-') + '</span>')
     + '<span>' + escHtml(f.time || '') + '</span>'
     + '</div>';
-  if (f.error) h += '<div style="margin-top:7px;color:var(--red);background:#fef2f2;padding:6px 10px;border-radius:6px;font-size:12px">' + escHtml(f.error) + '</div>';
+  if (f.error) h += '<div style="margin-top:7px;color:var(--red);background:#fef2f2;padding:6px 10px;border-radius:6px;font-size:' + _capSz(.96) + '">' + escHtml(f.error) + '</div>';
   h += '</div>';
   // ⏸ 断点横幅（Charles / Fiddler 式：暂停态与操作就在详情里，无需跳去别的页面）
   if (f.bp) {
     var bpCur = _capPendingById[f.bp.id];
     var isResp = f.bp.phase === 'response';
     h += '<div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 12px;margin-bottom:12px;border-radius:8px;background:#fffbeb;border:1px solid #fde68a">';
-    h += '<span style="flex-shrink:0;font-size:12.5px;font-weight:700;color:#b45309">⏸ ' + (isResp ? '响应' : '请求') + '已截获并暂停</span>';
+    h += '<span style="flex-shrink:0;font-size:var(--cap-fs, 12.5px);font-weight:700;color:#b45309">⏸ ' + (isResp ? '响应' : '请求') + '已截获并暂停</span>';
     if (bpCur) {
-      h += '<span style="font-size:12px;color:#b45309">剩余 <b data-bp-remain="' + escHtml(f.bp.id) + '" style="' + (bpCur.remain <= 60 ? 'color:var(--red)' : '') + '">' + _capFmtRemain(bpCur.remain) + '</b> 后自动放行</span>';
+      h += '<span style="font-size:' + _capSz(.96) + ';color:#b45309">剩余 <b data-bp-remain="' + escHtml(f.bp.id) + '" style="' + (bpCur.remain <= 60 ? 'color:var(--red)' : '') + '">' + _capFmtRemain(bpCur.remain) + '</b> 后自动放行</span>';
     }
     if (_capDetailBpEdit) {
-      h += '<span style="font-size:12px;color:#b45309">· 编辑中：修改下方报文后点「应用编辑并放行」</span>';
+      h += '<span style="font-size:' + _capSz(.96) + ';color:#b45309">· 编辑中：修改下方报文后点「应用编辑并放行」</span>';
     } else {
       h += '<span style="flex:1"></span>';
       h += '<button class="btn btn-sm" onclick="capBpDetailEditToggle(true)">编辑报文</button>';
@@ -27380,7 +28452,7 @@ function renderCaptureDetail(f) {
 
 // 详情标签页样式：激活=主色填充，未激活=描边
 function _capTabCss(tab) {
-  var base = 'padding:5px 14px;border-radius:6px;font-size:12.5px;cursor:pointer;user-select:none;border:1px solid ';
+  var base = 'padding:5px 14px;border-radius:6px;font-size:var(--cap-fs, 12.5px);cursor:pointer;user-select:none;border:1px solid ';
   return _capDetailTab === tab
     ? base + 'var(--primary);background:var(--primary);color:#fff;font-weight:600'
     : base + 'var(--border);background:#fff;color:var(--text2)';
@@ -27428,21 +28500,21 @@ function _capWsArea(ws) {
   var msgs = ws.messages || [];
   var h = '<div style="flex:1 1 auto;min-height:0;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff">';
   h += '<div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg);border-bottom:1px solid var(--border)">';
-  h += '<span style="font-size:12.5px;font-weight:600;color:var(--text)">WebSocket 消息</span>';
-  h += '<span style="font-size:11px;color:var(--text3)">' + (ws.count || msgs.length) + ' 条' + (ws.truncated ? '（已达聚合上限，后续消息未记录）' : '') + '</span>';
+  h += '<span style="font-size:var(--cap-fs, 12.5px);font-weight:600;color:var(--text)">WebSocket 消息</span>';
+  h += '<span style="font-size:' + _capSz(.88) + ';color:var(--text3)">' + (ws.count || msgs.length) + ' 条' + (ws.truncated ? '（已达聚合上限，后续消息未记录）' : '') + '</span>';
   h += '<span style="flex:1"></span>';
   h += '<button class="btn btn-xs" onclick="capCopyWs()">复制</button>';
   h += '</div>';
-  h += '<div style="flex:1;min-height:0;overflow:auto;font-size:12px;line-height:1.6">';
+  h += '<div style="flex:1;min-height:0;overflow:auto;font-size:' + _capSz(.96) + ';line-height:1.6">';
   if (!msgs.length) {
     h += '<div style="color:var(--text3);padding:14px 12px">等待消息…（连接建立后消息会随时长实时聚合，点选该流量行可刷新）</div>';
   } else {
     msgs.forEach(function(m) {
       var up = m.dir === 'c';
       h += '<div style="display:flex;gap:8px;padding:3px 12px;border-bottom:1px solid var(--border)">'
-        + '<span style="flex-shrink:0;width:56px;color:var(--text3);font-size:11px">' + escHtml(m.t || '') + '</span>'
+        + '<span style="flex-shrink:0;width:56px;color:var(--text3);font-size:' + _capSz(.88) + '">' + escHtml(m.t || '') + '</span>'
         + '<span style="flex-shrink:0;width:20px;text-align:center;font-weight:700;color:' + (up ? '#2563eb' : '#16a34a') + '" title="' + (up ? '客户端 → 服务端' : '服务端 → 客户端') + '">' + (up ? '↑' : '↓') + '</span>'
-        + '<span style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:11.5px;color:' + (m.type === 'bin' ? 'var(--text3)' : 'var(--text)') + '">' + escHtml(m.text || '') + '</span>'
+        + '<span style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:' + _capSz(.92) + ';color:' + (m.type === 'bin' ? 'var(--text3)' : 'var(--text)') + '">' + escHtml(m.text || '') + '</span>'
         + '</div>';
     });
   }
@@ -27487,11 +28559,11 @@ function _capDetailArea(sec, content, copyKey) {
   h += '<div style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg);border-bottom:1px solid var(--border)">';
   h += _capSectionTabBtn(sec, 'headers', 'Headers');
   h += isReq ? _capSectionTabBtn(sec, 'query', '请求参数') : _capSectionTabBtn(sec, 'body', 'Body');
-  if (sec === 'headers' && content && typeof content === 'object') h += '<span style="font-size:11px;color:var(--text3);margin-left:2px">' + Object.keys(content).length + ' 项</span>';
+  if (sec === 'headers' && content && typeof content === 'object') h += '<span style="font-size:' + _capSz(.88) + ';color:var(--text3);margin-left:2px">' + Object.keys(content).length + ' 项</span>';
   h += '<span style="flex:1"></span>';
   if (sec !== 'query') h += '<button class="btn btn-xs" onclick="capCopyDetail(\'' + copyKey + '\')" title="复制 ' + title + ' 内容">复制</button>';  // 请求参数区各内容块自带复制按钮，无需整区复制
   h += '</div>';
-  h += '<div style="flex:1;min-height:0;overflow:auto;padding:8px 12px;font-size:12px;line-height:1.7">';
+  h += '<div style="flex:1;min-height:0;overflow:auto;padding:8px 12px;font-size:' + _capSz(.96) + ';line-height:1.7">';
   if (sec === 'headers') {
     h += _capHeadersRows(content);
   } else if (sec === 'query') {
@@ -27507,7 +28579,7 @@ function _capDetailArea(sec, content, copyKey) {
 // 区段 tab 按钮：激活=白底胶囊（灰底标题栏上的分段控件），未激活=纯文字
 function _capSectionTabBtn(activeSec, sec, label) {
   var active = activeSec === sec;
-  return '<span onclick="switchCapSectionTab(\'' + sec + '\')" style="padding:3px 12px;border-radius:6px;font-size:12.5px;cursor:pointer;user-select:none;'
+  return '<span onclick="switchCapSectionTab(\'' + sec + '\')" style="padding:3px 12px;border-radius:6px;font-size:var(--cap-fs, 12.5px);cursor:pointer;user-select:none;'
     + (active
       ? 'background:#fff;border:1px solid var(--border);color:var(--primary);font-weight:600;box-shadow:0 1px 2px rgba(15,23,42,.08)'
       : 'border:1px solid transparent;color:var(--text2)')
@@ -27521,8 +28593,8 @@ function _capHeadersRows(headers) {
   if (!keys.length) return '<span style="color:var(--text3)">（无）</span>';
   return '<div style="display:grid;grid-template-columns:max-content 1fr">'
     + keys.map(function(k) {
-      return '<div class="cap-hdr-cell" title="点击复制键名" onclick="_capCopyHdrCell(this, 1)" style="padding:3px 6px;white-space:nowrap;font-weight:600;color:var(--text);font-size:12px">' + escHtml(k) + '</div>'
-        + '<div class="cap-hdr-cell" title="点击复制值" onclick="_capCopyHdrCell(this, 0)" style="padding:3px 6px;min-width:0;word-break:break-all;color:var(--text2);font-size:12px">' + escHtml(String(headers[k])) + '</div>';
+      return '<div class="cap-hdr-cell" title="点击复制键名" onclick="_capCopyHdrCell(this, 1)" style="padding:3px 6px;white-space:nowrap;font-weight:600;color:var(--text);font-size:' + _capSz(.96) + '">' + escHtml(k) + '</div>'
+        + '<div class="cap-hdr-cell" title="点击复制值" onclick="_capCopyHdrCell(this, 0)" style="padding:3px 6px;min-width:0;word-break:break-all;color:var(--text2);font-size:' + _capSz(.96) + '">' + escHtml(String(headers[k])) + '</div>';
     }).join('')
     + '</div>';
 }
@@ -27532,8 +28604,8 @@ function _capQueryRows(items) {
   if (!items || !items.length) return '<span style="color:var(--text3)">（无）</span>';
   return '<div style="display:grid;grid-template-columns:max-content 1fr">'
     + items.map(function(it) {
-      return '<div class="cap-hdr-cell" title="点击复制参数名" onclick="_capCopyHdrCell(this, 1)" style="padding:3px 6px;white-space:nowrap;font-weight:600;color:var(--text);font-size:12px">' + escHtml(it.k) + '</div>'
-        + '<div class="cap-hdr-cell" title="点击复制参数值" onclick="_capCopyHdrCell(this, 0)" style="padding:3px 6px;min-width:0;word-break:break-all;color:var(--text2);font-size:12px">' + escHtml(it.v) + '</div>';
+      return '<div class="cap-hdr-cell" title="点击复制参数名" onclick="_capCopyHdrCell(this, 1)" style="padding:3px 6px;white-space:nowrap;font-weight:600;color:var(--text);font-size:' + _capSz(.96) + '">' + escHtml(it.k) + '</div>'
+        + '<div class="cap-hdr-cell" title="点击复制参数值" onclick="_capCopyHdrCell(this, 0)" style="padding:3px 6px;min-width:0;word-break:break-all;color:var(--text2);font-size:' + _capSz(.96) + '">' + escHtml(it.v) + '</div>';
     }).join('')
     + '</div>';
 }
@@ -27557,8 +28629,8 @@ function _capQueryPanel(data) {
 function _capParamBlock(titleTxt, countTxt, contentHtml, copyKind, copyTip) {
   return '<div style="margin-bottom:16px">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
-    + '<span style="font-size:12px;font-weight:700;color:var(--text)">' + titleTxt + '</span>'
-    + (countTxt ? '<span style="font-size:11px;color:var(--text3)">' + countTxt + '</span>' : '')
+    + '<span style="font-size:' + _capSz(.96) + ';font-weight:700;color:var(--text)">' + titleTxt + '</span>'
+    + (countTxt ? '<span style="font-size:' + _capSz(.88) + ';color:var(--text3)">' + countTxt + '</span>' : '')
     + '<span style="flex:1"></span>'
     + '<button class="btn btn-xs" onclick="capCopyDetail(\'' + copyKind + '\')" title="' + copyTip + '">复制</button>'
     + '</div>'
@@ -27621,12 +28693,12 @@ function _capBodyHtml(raw) {
   if (typeof raw === 'string') {
     try { val = JSON.parse(raw); } catch(e) { return _capBodyPlain(raw); }
   }
-  var pre = '<pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:12px;line-height:1.75">';
+  var pre = '<pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:' + _capSz(.96) + ';line-height:1.75">';
   return pre + _capJsonHtml(val) + '</pre>';
 }
 
 function _capBodyPlain(txt) {
-  return '<pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--text)">' + escHtml(txt) + '</pre>';
+  return '<pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:' + _capSz(.96) + ';line-height:1.75;color:var(--text)">' + escHtml(txt) + '</pre>';
 }
 
 // JSON 递归高亮：键=紫 / 字符串=绿 / 数字=蓝 / 布尔与 null=橙
@@ -28355,7 +29427,7 @@ function renderRemoteMappings() {
     html += '</button>';
     html += '<span style="font-size:11px;color:var(--text3);flex-shrink:0">映射从</span>';
     html += '<code style="font-size:12px;font-family:var(--mono);color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(m.remote_host || '') + (m.remote_path ? escHtml(m.remote_path) : '') + '</code>';
-    html += '<span style="font-size:11px;padding:2px 6px;border-radius:4px;flex-shrink:0;' + (isEnabled ? 'background:#dcfce7;color:#166534' : 'background:#fee2e2;color:#b91c1c') + '">' + (isEnabled ? '已启用' : '已禁用') + '</span>';
+    // 开关本身已经能表达启用状态（蓝/灰 + 卡片描边与透明度），这里不再叠一枚「已启用 / 已禁用」徽标
     html += '</div>';
     html += '<div style="display:flex;align-items:center;gap:8px">';
     html += '<span style="font-size:11px;color:var(--text3);flex-shrink:0;margin-left:46px">映射到</span>';
@@ -31133,7 +32205,7 @@ function settingsNav(name) {
 
 // 字号：输入框（实时生效）+ 失焦规范化 + 恢复默认
 function settingsFontSync() {
-  ['req', 'resp'].forEach(function(k) {
+  ['req', 'resp', 'batch', 'cap', 'db'].forEach(function(k) {
     var el = document.getElementById('set-fs-' + k);
     if (el) el.value = _casesFsClamp(k, _casesFontSizes[k]);
   });
@@ -31402,7 +32474,7 @@ async function _loadSettingsPaths() {
       </div>
       <div class="sp-pane" data-pane="appearance">
         <div class="sp-row">
-          <div class="sp-row-label">请求 Body 字号<span class="sp-row-desc">JSON / 原始文本编辑区，10~24px</span></div>
+          <div class="sp-row-label"><span class="sp-row-mod">接口测试</span>请求 Body 字号<span class="sp-row-desc">接口用例 · 请求体编辑区（JSON / 原始文本），10~24px</span></div>
           <div class="sp-row-ctl">
             <span class="sp-num">
               <input type="number" id="set-fs-req" min="10" max="24" step="0.5" inputmode="decimal"
@@ -31414,7 +32486,7 @@ async function _loadSettingsPaths() {
           </div>
         </div>
         <div class="sp-row">
-          <div class="sp-row-label">响应 Body 字号<span class="sp-row-desc">Body 页的响应内容，10~24px</span></div>
+          <div class="sp-row-label"><span class="sp-row-mod">接口测试</span>响应 Body 字号<span class="sp-row-desc">接口用例 · 响应体查看区，10~24px</span></div>
           <div class="sp-row-ctl">
             <span class="sp-num">
               <input type="number" id="set-fs-resp" min="10" max="24" step="0.5" inputmode="decimal"
@@ -31423,6 +32495,42 @@ async function _loadSettingsPaths() {
             </span>
             <button class="btn btn-sm" onclick="settingsFontReset('resp')">恢复默认</button>
             <span class="sp-hint">默认 12.5px</span>
+          </div>
+        </div>
+        <div class="sp-row">
+          <div class="sp-row-label"><span class="sp-row-mod">接口测试</span>批量运行字号<span class="sp-row-desc">接口用例 · 批量运行的结果表格与详情，10~24px</span></div>
+          <div class="sp-row-ctl">
+            <span class="sp-num">
+              <input type="number" id="set-fs-batch" min="10" max="24" step="1" inputmode="decimal"
+                oninput="settingsFontEdit('batch', this)" onchange="settingsFontCommit('batch', this)">
+              <span class="sp-unit">px</span>
+            </span>
+            <button class="btn btn-sm" onclick="settingsFontReset('batch')">恢复默认</button>
+            <span class="sp-hint">默认 13px</span>
+          </div>
+        </div>
+        <div class="sp-row">
+          <div class="sp-row-label"><span class="sp-row-mod">抓包 &amp; Mock</span>抓包字号<span class="sp-row-desc">抓包 · 流量列表与请求详情，10~24px</span></div>
+          <div class="sp-row-ctl">
+            <span class="sp-num">
+              <input type="number" id="set-fs-cap" min="10" max="24" step="0.5" inputmode="decimal"
+                oninput="settingsFontEdit('cap', this)" onchange="settingsFontCommit('cap', this)">
+              <span class="sp-unit">px</span>
+            </span>
+            <button class="btn btn-sm" onclick="settingsFontReset('cap')">恢复默认</button>
+            <span class="sp-hint">默认 12.5px</span>
+          </div>
+        </div>
+        <div class="sp-row">
+          <div class="sp-row-label"><span class="sp-row-mod">数据库</span>数据库字号<span class="sp-row-desc">SQL 工作台 · SQL 编辑区与结果表格，10~24px</span></div>
+          <div class="sp-row-ctl">
+            <span class="sp-num">
+              <input type="number" id="set-fs-db" min="10" max="24" step="0.5" inputmode="decimal"
+                oninput="settingsFontEdit('db', this)" onchange="settingsFontCommit('db', this)">
+              <span class="sp-unit">px</span>
+            </span>
+            <button class="btn btn-sm" onclick="settingsFontReset('db')">恢复默认</button>
+            <span class="sp-hint">默认 13px</span>
           </div>
         </div>
       </div>
