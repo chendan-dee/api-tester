@@ -1,8 +1,4 @@
 {
-  "transfer": {
-    "save_dir": "D:/录制&互传",
-    "public_url": ""
-  },
   "device_names": {
     "mob_qfbygp": "鸿蒙手机",
     "mob_3ki17r": "vivo",
@@ -13,6 +9,14 @@
     "mob_g1mk1t": "非常非常非常长的设备名称测试一二",
     "mob_qp2obv": "鸿蒙手机",
     "mob_a9nfz5": "S60",
-    "mob_flnoo5": "红米17pro"
+    "mob_flnoo5": "红米17pro",
+    "mob_v2s3m": "红米17pro",
+    "mob_w9ao4k": "S60",
+    "mob_a8fo9q": "S60",
+    "mob_pl0tju": "红米17pro",
+    "mob_5bylua": "S60"
+  },
+  "transfer": {
+    "save_dir": "D:/文件"
   }
 }

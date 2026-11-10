@@ -246,6 +246,7 @@ button, input, textarea, select { font-family: inherit; }
 <script src="/static/uploader.min.js"></script>
 <script>
 var DEVICE_NAME_KEY = 'mocktool_device_name';
+var DEVICE_ID_KEY = 'mocktool_device_id';  // 本机设备号：存下来复用，别每次都拿指纹重算
 var _deviceName = localStorage.getItem(DEVICE_NAME_KEY) || '';
 var _itemsCache = [];
 var _deviceId = '';
@@ -354,31 +355,25 @@ try {
   }
 } catch(e) {}
 
-// 浏览器指纹：组合设备特征生成稳定ID（清除数据后依然相同）
+// 浏览器指纹：只在首次访问（或清了站点数据）时用来生成设备号
+// 特征必须尽量稳：UA 里的浏览器版本号、屏幕方向、Canvas 渲染结果都会在浏览器升级 /
+// 横竖屏切换 / WebView 换渲染路径后变，算进去就等于换了部手机，设备列表会攒出一串同名条目
 function getFingerprint() {
+  var ua = (navigator.userAgent || '')
+    .replace(/Chrome\/[\d.]+/g, 'Chrome')     // 浏览器自动升级不改身份
+    .replace(/Version\/[\d.]+/g, 'Version')
+    .replace(/Safari\/[\d.]+/g, 'Safari');
+  var w = Math.min(screen.width, screen.height);  // 横竖屏同值：取短边/长边
+  var h = Math.max(screen.width, screen.height);
   var raw = [
-    navigator.userAgent,
+    ua,
     navigator.language,
-    screen.width + 'x' + screen.height,
+    w + 'x' + h,
     screen.colorDepth,
     new Date().getTimezoneOffset(),
     navigator.platform,
-    navigator.hardwareConcurrency || '',
-    (navigator.deviceMemory || '') + ''
+    navigator.hardwareConcurrency || ''
   ].join('|');
-  // Canvas 指纹
-  try {
-    var canvas = document.createElement('canvas');
-    canvas.width = 100; canvas.height = 30;
-    var ctx = canvas.getContext('2d');
-    ctx.textBaseline = 'top';
-    ctx.font = '14px Arial';
-    ctx.fillStyle = '#f60';
-    ctx.fillRect(0, 0, 100, 30);
-    ctx.fillStyle = '#069';
-    ctx.fillText('mocktool', 2, 2);
-    raw += '|' + canvas.toDataURL().slice(-50);
-  } catch(e) {}
   // 简单hash
   var hash = 0;
   for (var i = 0; i < raw.length; i++) {
@@ -388,8 +383,16 @@ function getFingerprint() {
   return 'mob_' + Math.abs(hash).toString(36);
 }
 
-// 初始化设备号：优先用指纹（稳定），回退到localStorage
-_deviceId = getFingerprint();
+// 初始化设备号：优先复用本机存下的 ID，没有（首次访问 / 清过站点数据）才按指纹生成
+// 指纹另外单独上报给服务端：同一台手机换浏览器 / 换了访问域名（局域网 IP 与公网域名
+// 的 localStorage 不互通）时会算出新 ID，服务端靠指纹把旧条目收拢，不会多出一条
+var _deviceFp = getFingerprint();
+_deviceId = '';
+try { _deviceId = localStorage.getItem(DEVICE_ID_KEY) || ''; } catch(e) { _deviceId = ''; }
+if (!/^mob_[0-9a-z]{3,}$/.test(_deviceId)) {
+  _deviceId = _deviceFp;
+  try { localStorage.setItem(DEVICE_ID_KEY, _deviceId); } catch(e) {}
+}
 
 document.getElementById('device-name').value = _deviceName;
 updateMyDeviceLabel();
@@ -639,7 +642,7 @@ async function registerDevice() {
   try {
     await fetch('/api/transfer/register', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ device_id: _deviceId, device_name: _deviceName || _deviceId })
+      body: JSON.stringify({ device_id: _deviceId, device_name: _deviceName || _deviceId, fp: _deviceFp })
     });
     setConnStatus(true);
   } catch(e) {

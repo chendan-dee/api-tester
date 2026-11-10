@@ -1865,6 +1865,12 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .dev-tab { padding:6px 14px; border-radius:6px; border:1px solid var(--border); background:var(--card); color:var(--text2); font-size:14px; cursor:pointer; transition:.15s; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dev-tab:hover { border-color:var(--primary); color:var(--primary); }
 .dev-tab.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+/* 离线设备（心跳超时）：名字保持正常色，只把「离线」二字做淡；选中（蓝底）时反白，
+   否则灰字压在蓝底上会发糊看不见。删除交给用户手动点 × */
+.dev-tab.offline .dev-off { color:var(--text3); }
+.dev-tab.active.offline { color:#fff; }
+.dev-tab.active .dev-off { color:rgba(255,255,255,.75); }
+.dev-off { font-size:11px; margin-left:5px; flex-shrink:0; }
 /* 已连接设备列表：容器被撑高时只让行靠上排（flex-wrap 单行场景 align-content 默认 stretch 会把唯一的 tab 拉成竖条） */
 #transfer-dev-tabs { align-content:flex-start; }
 /* 空态单行：设备卡最小时内容区只有 85px 左右，两行会被裁掉 */
@@ -2373,7 +2379,8 @@ select.cases-env-select.has-env { color: var(--primary); border-color: #c7d2fe; 
 .cases-resp-table td { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; word-break: break-all; }
 .cases-resp-empty { color: var(--text3); font-size: 13px; padding: 16px 4px; }
 /* 分组树 */
-.cases-group-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; margin: 14px 0 2px; border-radius: 6px; font-size: 12.5px; font-weight: 700; color: #334155; cursor: pointer; user-select: none; background: transparent; border: none; }
+/* 分组之间留 6px（相邻外边距取大值）：空分组多时 14px 会显得隔得很远，34 行高 + 6 已够区分 */
+.cases-group-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; margin: 6px 0 2px; border-radius: 6px; font-size: 12.5px; font-weight: 700; color: #334155; cursor: pointer; user-select: none; background: transparent; border: none; }
 .cases-group-head:first-child { margin-top: 0; }
 .cases-group-head:hover { background: #f1f5f9; }
 .cases-group-head.drag-over { box-shadow: inset 0 0 0 1px var(--primary); background: #eef1fe; }
@@ -30565,6 +30572,7 @@ function _connectDesktopSSE() {
       } else if (msg.event === 'new_item') {
         // 互传新消息（文本/文件）：即时刷新列表；非本端发送且未在查看该设备时，对应设备条目累计未读（微信式，不弹提示）
         loadTransferItems();
+        loadTransferDevices();  // 设备刚发过消息就是在线：同步刷新设备条目的在线/离线标记
         if (msg.device_id && msg.device_id !== 'desktop' && !(_selectedDeviceId === msg.device_id && !document.hidden)) {
           _bumpDeviceUnread(msg.device_id);
         }
@@ -30811,20 +30819,30 @@ function selectDevice(deviceId) {
 // 设备列表图标（14px 小号线性 SVG，currentColor 跟随 tab 选中态文字色；全部设备=网格，单个设备=手机）
 var _ICO_ALL = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;margin-right:5px"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>';
 var _ICO_DEV = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;margin-right:5px"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>';
+var _TF_ONLINE_WINDOW = 120;  // 秒：旧响应没带 online 字段时，按心跳时间兜底判定
+// 在线状态以服务端为准：长连接还挂着，或刚发过消息/上传过文件（发消息本身也算心跳）
+function _tfDeviceOnline(d, nowSec) {
+  if (typeof d.online === 'boolean') return d.online;
+  return nowSec - (d.last_seen || 0) < _TF_ONLINE_WINDOW;
+}
 async function loadTransferDevices() {
   try {
     var res = await fetch('/api/transfer/devices');
     var data = await res.json();
     var devices = data.devices || [];
     _transferDevicesCache = devices;
-    document.getElementById('transfer-device-count').textContent = devices.length;
+    var nowSec = Date.now() / 1000;
+    // 离线记录不自动清理（留着看历史），但不该算进“已连接”：否则同名旧记录会把台数报大
+    var onlineCount = devices.filter(function(d) { return _tfDeviceOnline(d, nowSec); }).length;
+    document.getElementById('transfer-device-count').textContent = onlineCount;
     var tabs = document.getElementById('transfer-dev-tabs');
     // 「全部设备」与各设备 tab 同一套尺寸：整行宽 + 左对齐，避免清空后只剩一个居中小方块
     var html = '<div class="dev-tab' + (!_selectedDeviceId ? ' active' : '') + '" id="dev-tab-all" onclick="selectDevice(\'\')" style="width:100%;text-align:left;display:flex;align-items:center">' + _ICO_ALL + '\u5168\u90e8\u8bbe\u5907</div>';
     devices.forEach(function(d) {
       var isActive = _selectedDeviceId === d.device_id;
-      html += '<div class="dev-tab' + (isActive ? ' active' : '') + '" id="dev-tab-' + d.device_id + '" style="width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;padding-right:6px">';
-      html += '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" onclick="selectDevice(\'' + d.device_id + '\')" title="' + escHtml(d.name) + '">' + _ICO_DEV + escHtml(d.name) + '</span>';
+      var offline = !_tfDeviceOnline(d, nowSec);
+      html += '<div class="dev-tab' + (isActive ? ' active' : '') + (offline ? ' offline' : '') + '" id="dev-tab-' + d.device_id + '" style="width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;padding-right:6px">';
+      html += '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" onclick="selectDevice(\'' + d.device_id + '\')" title="' + escHtml(d.name) + (offline ? '\uff08\u5df2\u79bb\u7ebf\uff09' : '') + '">' + _ICO_DEV + escHtml(d.name) + (offline ? '<span class="dev-off">\u79bb\u7ebf</span>' : '') + '</span>';
       var un = _deviceUnread[d.device_id] || 0;  // 该设备未读数：有则渲染红色徽标（微信式）
       if (un > 0) html += '<span class="unread-badge" title="未读新消息">' + (un > 99 ? '99+' : un) + '</span>';
       html += '<span style="cursor:pointer;color:#ef4444;font-size:12px;padding:0 4px;flex-shrink:0" onclick="deleteDevice(\'' + d.device_id + '\')" title="删除该设备">\u2715</span>';

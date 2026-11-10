@@ -6384,13 +6384,89 @@ def _validate_file_id(file_id):
     return len(file_id) > 128 or '/' in file_id or '\\' in file_id or '..' in file_id or '\x00' in file_id
 
 
+# 同名设备合并窗口（秒）：手机端设备号是浏览器指纹算出来的，换浏览器（微信内置 / 系统浏览器）
+# 或指纹里的特征变动都会算出新 ID，旧记录超过这么久没心跳（已离线）就让新 ID 接管，
+# 否则设备列表会攒出一串同名条目。可通过 config.json 的 transfer.same_name_merge_seconds 调整
+_TRANSFER_SAME_NAME_OFFLINE = 120
+try:
+    _v = int(_cfg.get('transfer', {}).get('same_name_merge_seconds', 120))
+    if 5 <= _v <= 86400:
+        _TRANSFER_SAME_NAME_OFFLINE = _v
+except Exception:
+    pass
+
+
+def _adopt_same_name_offline(device_id, device_name, now):
+    """同名且已离线的旧记录让位给新设备号（调用方必须已持有 _transfer_devices_lock）
+    返回被接管的旧 ID 列表；同名设备还在线时不动它（可能是真的两台同名手机）"""
+    if not device_name or device_name == device_id or device_name == '电脑':
+        return []
+    adopted = []
+    for old_id, info in list(_transfer_devices.items()):
+        if old_id == device_id or old_id == 'desktop':
+            continue
+        if str(info.get('name') or '') != device_name:
+            continue
+        try:
+            last_seen = float(info.get('last_seen') or 0)
+        except (TypeError, ValueError):
+            last_seen = 0
+        if now - last_seen <= _TRANSFER_SAME_NAME_OFFLINE:
+            continue
+        del _transfer_devices[old_id]
+        adopted.append(old_id)
+    return adopted
+
+
+def _adopt_same_fingerprint_offline(device_id, fp, now):
+    """同一部手机换了浏览器 / 换了访问域名（localStorage 不互通）会算出新 ID，
+    指纹相同就把旧记录收拢过来（调用方必须已持有 _transfer_devices_lock）
+    返回被接管的旧 ID 列表；同指纹但还有连接在活跃（多标签页）时不动"""
+    if not fp:
+        return []
+    adopted = []
+    for old_id, info in list(_transfer_devices.items()):
+        if old_id == device_id or old_id == 'desktop':
+            continue
+        if str(info.get('fp') or '') != fp:
+            continue
+        try:
+            last_seen = float(info.get('last_seen') or 0)
+        except (TypeError, ValueError):
+            last_seen = 0
+        if now - last_seen <= _TRANSFER_SAME_NAME_OFFLINE:
+            continue
+        del _transfer_devices[old_id]
+        adopted.append(old_id)
+    return adopted
+
+
+def _reassign_transfer_items(old_id, new_id):
+    """把旧设备号的历史互传记录改挂到新设备号上（保留条目，不丢消息）"""
+    if not old_id or old_id == new_id:
+        return
+    changed = False
+    with _transfer_items_lock:
+        for it in _transfer_items:
+            if it.get('device_id') == old_id:
+                it['device_id'] = new_id
+                changed = True
+            if it.get('target_device_id') == old_id:
+                it['target_device_id'] = new_id
+                changed = True
+        if changed:
+            _persist_transfer_items()
+
+
 def _touch_transfer_device(device_id, device_name, connected_time):
     """更新/注册设备信息（新设备或名称变化时持久化并通知 PC 端刷新；心跳类更新不写盘）"""
     device_name = str(device_name or '')[:64]  # 统一入口：类型归一 + 限长 64
     now = time.time()
     changed = False
+    adopted = []
     with _transfer_devices_lock:
         if device_id not in _transfer_devices:
+            adopted = _adopt_same_name_offline(device_id, device_name, now)
             _transfer_devices[device_id] = {
                 'name': device_name,
                 'connected_at': connected_time,
@@ -6404,6 +6480,13 @@ def _touch_transfer_device(device_id, device_name, connected_time):
                 _transfer_devices[device_id]['name'] = device_name
                 _save_transfer_devices()  # 名称变化时持久化
                 changed = True
+            # 本机在线时顺手收拾同名离线记录（不等到下次算出新 ID 才合并，否则旧条目会永久残留）
+            adopted = _adopt_same_name_offline(device_id, _transfer_devices[device_id].get('name'), now)
+            if adopted:
+                _save_transfer_devices()
+                changed = True
+    for old_id in adopted:  # 被接管的旧记录：历史互传记录改挂到新设备，列表里只留一条
+        _reassign_transfer_items(old_id, device_id)
     if changed:
         _notify_device_changed()
     return now
@@ -7132,6 +7215,8 @@ def api_transfer_devices():
     result = []
     with _transfer_devices_lock:
         devices_snapshot = list(_transfer_devices.items())
+    with _sse_queues_lock:
+        sse_alive = {did for did, qs in _sse_queues.items() if qs}  # 页面长连接还挂着 = 在线
     with _transfer_items_lock:
         items_snapshot = list(_transfer_items)
     for did, info in devices_snapshot:
@@ -7145,6 +7230,8 @@ def api_transfer_devices():
             'connected_at': info.get('connected_at', ''),
             'last_seen': info.get('last_seen', 0),
             'items_count': items_count,
+            # 在线 = 页面长连接还挂着（上线/下线都有 SSE 事件通知刷新），不再靠注册时间猜
+            'online': did in sse_alive,
         })
     return jsonify({'devices': result})
 
@@ -7170,6 +7257,10 @@ def api_transfer_register():
     data = request.json or {}
     device_id = data.get('device_id', '')
     device_name = str(data.get('device_name', '') or '')[:64]  # 限长 64 字符
+    # 设备指纹（同一台手机换浏览器/换域名也不变）：只用来收拢旧条目，不当身份主键
+    fp = str(data.get('fp', '') or '')[:64]
+    if fp and not re.match(r'^[A-Za-z0-9_-]{4,64}$', fp):
+        fp = ''
     if not device_id:
         return jsonify({'error': 'missing device_id'}), 400
     # device_id 长度限制 + 禁止路径分隔符（防越权/防持久化文件被撑爆）
@@ -7186,19 +7277,35 @@ def api_transfer_register():
     with _transfer_devices_lock:
         is_new = device_id not in _transfer_devices
         name_changed = False
+        adopted = []
         if device_id in _transfer_devices:
             _transfer_devices[device_id]['last_seen'] = now
+            if fp and _transfer_devices[device_id].get('fp') != fp:
+                _transfer_devices[device_id]['fp'] = fp
+                _save_transfer_devices()  # 指纹变了（换浏览器等）记下来，下次靠它收拢旧条目
             if device_name and device_name != _transfer_devices[device_id].get('name'):
                 _transfer_devices[device_id]['name'] = device_name
                 _save_transfer_devices()  # 名称变化时持久化
                 name_changed = True
+            # 本机在线时顺手收拢旧条目：先按指纹（同一台手机换了浏览器/域名），再按名字
+            adopted = _adopt_same_fingerprint_offline(device_id, _transfer_devices[device_id].get('fp') or fp, now)
+            adopted += _adopt_same_name_offline(device_id, _transfer_devices[device_id].get('name'), now)
+            if adopted:
+                _save_transfer_devices()
+                name_changed = True
         else:
+            display_name = device_name or _device_names_cache.get(device_id, device_id)
+            adopted = _adopt_same_fingerprint_offline(device_id, fp, now)
+            adopted += _adopt_same_name_offline(device_id, display_name, now)
             _transfer_devices[device_id] = {
-                'name': device_name or _device_names_cache.get(device_id, device_id),
+                'name': display_name,
                 'connected_at': datetime.now().strftime('%H:%M'),
                 'last_seen': now,
+                'fp': fp,
             }
             _save_transfer_devices()
+    for old_id in adopted:  # 同名旧记录的历史互传记录改挂到新设备，列表里只留一条
+        _reassign_transfer_items(old_id, device_id)
     # 新设备注册或名称变更时通知桌面端刷新设备列表
     if is_new or name_changed:
         _notify_device_changed()
@@ -8150,6 +8257,8 @@ def api_transfer_events():
             if device_id not in _sse_queues:
                 _sse_queues[device_id] = []
             _sse_queues[device_id].append(q)
+        # 设备上线：通知 PC 端重算在线状态（与下线同一套通知，全事件驱动）
+        _notify_device_changed()
         try:
             # 发送初始连接确认
             yield "data: {\"event\": \"connected\"}\n\n"
@@ -8163,12 +8272,19 @@ def api_transfer_events():
         except GeneratorExit:
             pass
         finally:
+            went_offline = False
             with _sse_queues_lock:
                 if device_id in _sse_queues:
                     try:
                         _sse_queues[device_id].remove(q)
                     except ValueError:
                         pass
+                    if not _sse_queues[device_id]:
+                        del _sse_queues[device_id]
+                        went_offline = True
+            # 设备下线：让 PC 端立即重算在线状态（事件驱动，不靠轮询）
+            if went_offline and device_id != 'desktop':
+                _notify_device_changed()
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
