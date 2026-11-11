@@ -317,6 +317,7 @@ if os.path.isdir(_old_cases_dir):
 
 for _src_dir in _old_data_sources:
     for _fname in ["_variables.json", "_workbench_todos.json", "_workbench_notes.json",
+                   "_workbench_quick_notes.json",
                    "_transfer_save_dir.txt", "_device_names.json",
                    "_mock_proxy.json", "_remote_proxy.json"]:
         _old = os.path.join(_src_dir, _fname)
@@ -4747,6 +4748,8 @@ NOTES_FILE = os.path.join(DATA_DIR, "_workbench_notes.json")
 # 计划分类集合单独存：todos 是数组结构（旧数据），不能塞对象进去，
 # 因此分类表另存一个文件，端点也只管分类的增删改
 TODO_CATS_FILE = os.path.join(DATA_DIR, "_workbench_todo_cats.json")
+# 随心记：右栏速记（与「记事本」的 notes 分开存，不混进笔记列表）
+QUICK_NOTES_FILE = os.path.join(DATA_DIR, "_workbench_quick_notes.json")
 DEFAULT_TODO_CATS = ["测试", "开发", "日常", "学习", "会议"]
 
 
@@ -4905,6 +4908,58 @@ def delete_note(note_id):
     notes = [n for n in notes if n["id"] != note_id]
     _save_notes(notes)
     return jsonify({"ok": True})
+
+
+def _load_quick_notes():
+    """加载随心记（文件缺失 / 格式损坏时返回空列表）"""
+    if os.path.exists(QUICK_NOTES_FILE):
+        with _file_lock(QUICK_NOTES_FILE):
+            try:
+                with open(QUICK_NOTES_FILE, "r", encoding="utf-8") as f:
+                    notes = json.load(f)
+                if isinstance(notes, list):
+                    return notes
+            except (json.JSONDecodeError, IOError):
+                pass
+    return []
+
+
+def _save_quick_notes(notes):
+    """保存随心记：只收 {id, text, created_at}，去空文本、保留前端顺序、上限 200 条"""
+    import uuid
+    from datetime import datetime as _dt
+    now = _dt.now().strftime("%Y-%m-%d %H:%M")
+    clean, seen = [], set()
+    for n in notes or []:
+        if not isinstance(n, dict):
+            continue
+        text = str(n.get("text") or "").strip()
+        if not text:
+            continue
+        nid = str(n.get("id") or "").strip() or ("qn_" + uuid.uuid4().hex[:10])
+        if nid in seen:
+            continue
+        seen.add(nid)
+        clean.append({"id": nid, "text": text, "created_at": str(n.get("created_at") or now)})
+        if len(clean) >= 200:
+            break
+    with _file_lock(QUICK_NOTES_FILE):
+        with open(QUICK_NOTES_FILE, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2)
+    return clean
+
+
+@app.route("/api/workbench/quick-notes", methods=["GET"])
+def get_quick_notes():
+    """获取随心记列表（最新的在前）"""
+    return jsonify({"ok": True, "notes": _load_quick_notes()})
+
+
+@app.route("/api/workbench/quick-notes", methods=["POST"])
+def save_quick_notes():
+    """保存随心记（整体覆盖写；单条增删由前端重组数组后提交）"""
+    notes = (request.get_json(silent=True) or {}).get("notes", [])
+    return jsonify({"ok": True, "notes": _save_quick_notes(notes)})
 
 
 # ═══════════════════════════════════════════════════

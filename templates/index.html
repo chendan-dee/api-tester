@@ -834,7 +834,7 @@ label { font-size: 13px; color: var(--text2); }
 .wb-section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .wb-section-title { font-size: 15px; font-weight: 600; color: var(--text); }
 .wb-section-sub { font-size: 12px; color: var(--text3); }
-.wb-plan-card { flex: 1; min-height: 420px; display: flex; flex-direction: column; overflow: hidden; margin-bottom: 0; padding: 0; }
+.wb-plan-card { display: flex; flex-direction: column; }
 .wb-plan-body { padding: 12px 16px 14px; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .wb-todo-input-row { display: flex; gap: 8px; margin-bottom: 14px; flex-shrink: 0; }
 .wb-todo-input-row input { flex: 1; }
@@ -855,12 +855,40 @@ label { font-size: 13px; color: var(--text2); }
 .wb-todo-item:last-child { border-bottom: none; }
 /* 紧跟明细区的计划行去掉底部实线，避免与明细区顶部分隔虚线叠成双线（:has 不支持时仅多一条线，不影响功能） */
 .wb-todo-item:has(+ .wb-todo-detail-box) { border-bottom: none; }
-.wb-todo-item input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
-.wb-todo-text { flex: 1; min-width: 0; word-break: break-all; }
-.wb-todo-item.done .wb-todo-text { text-decoration: line-through; color: var(--text3); }
+/* 复选框：原生 accent-color 只能填色、圆角不生效，这里自绘加大的圆角方框 + 描线勾 */
+.wb-todo-item input[type=checkbox],
+.wb-td-item input[type=checkbox] {
+  appearance: none; -webkit-appearance: none; margin: 0; flex-shrink: 0;
+  width: 18px; height: 18px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #fff;
+  display: inline-grid; place-content: center; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.wb-td-item input[type=checkbox] { width: 15px; height: 15px; border-radius: 5px; margin-top: 2px; }
+.wb-todo-item input[type=checkbox]::before,
+.wb-td-item input[type=checkbox]::before {
+  content: ''; width: 9px; height: 5px; border-left: 2px solid #fff; border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) scale(0); transition: transform .18s cubic-bezier(.2,.9,.3,1.5);
+}
+.wb-td-item input[type=checkbox]::before { width: 7px; height: 4px; }
+.wb-todo-item input[type=checkbox]:hover,
+.wb-td-item input[type=checkbox]:hover { border-color: var(--primary); }
+.wb-todo-item input[type=checkbox]:checked,
+.wb-td-item input[type=checkbox]:checked { background: var(--primary); border-color: var(--primary); }
+.wb-todo-item input[type=checkbox]:checked::before,
+.wb-td-item input[type=checkbox]:checked::before { transform: rotate(-45deg) scale(1); }
+.wb-todo-item input[type=checkbox]:focus-visible,
+.wb-td-item input[type=checkbox]:focus-visible { outline: 2px solid rgba(79,110,247,.35); outline-offset: 1px; }
+/* 主任务文本：加深 + 半粗，作为每行的视觉主体；删除线常驻但透明，勾选时靠描线色淡入 */
+/* 正文字号由设置面板「今日计划字号」控制（--wb-todo-fs，默认 13px），只影响正文与明细，胶囊/图标/时间保持固定尺寸 */
+.wb-todo-text { flex: 1; min-width: 0; word-break: break-all; font-size: var(--wb-todo-fs, 13px); line-height: 1.5; color: #1f2937; font-weight: 500; text-decoration: line-through; text-decoration-color: transparent; text-decoration-thickness: 1px; transition: color .28s ease, text-decoration-color .28s ease; }
+.wb-todo-item.done .wb-todo-text { text-decoration-color: currentColor; color: #9ca3af; font-weight: 400; }
 .wb-todo-badge { padding: 1px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .wb-todo-badge.done { background: #dcfce7; color: #16a34a; }
-.wb-todo-time { font-size: 11px; color: var(--text3); white-space: nowrap; flex-shrink: 0; }
+/* 创建 / 完成时间：纯信息，默认藏起来，悬停该行才淡入（已完成行常显，用于确认完成时间） */
+.wb-todo-time { font-size: 11px; color: #9ca3af; white-space: nowrap; flex-shrink: 0; opacity: 0; transition: opacity .18s; }
+.wb-todo-item:hover .wb-todo-time,
+.wb-todo-item:focus-within .wb-todo-time,
+.wb-todo-item.done .wb-todo-time { opacity: 1; }
 .wb-todo-del { opacity: 0; border: none; background: transparent; color: var(--text3); font-size: 15px; line-height: 1; padding: 3px 7px; border-radius: 6px; cursor: pointer; transition: .15s; flex-shrink: 0; font-family: inherit; }
 .wb-todo-item:hover .wb-todo-del { opacity: 1; }
 .wb-todo-del:hover { background: #fee2e2; color: var(--red); }
@@ -874,7 +902,7 @@ label { font-size: 13px; color: var(--text2); }
 .wb-todo-item:hover .wb-todo-copy { opacity: .8; }
 .wb-todo-copy:hover { background: #eef1fe; color: var(--primary); opacity: 1; }
 .wb-todo-copy:focus-visible { opacity: 1; outline: 2px solid var(--primary); outline-offset: 1px; }
-.wb-todo-text-edit { flex: 1; min-width: 0; font-size: 13px; font-family: inherit; padding: 3px 8px; border: 1px solid var(--primary); border-radius: 6px; background: #fff; color: var(--text); outline: none; box-shadow: 0 0 0 3px rgba(79,110,247,.12); }
+.wb-todo-text-edit { flex: 1; min-width: 0; font-size: var(--wb-todo-fs, 13px); font-family: inherit; padding: 3px 8px; border: 1px solid var(--primary); border-radius: 6px; background: #fff; color: var(--text); outline: none; box-shadow: 0 0 0 3px rgba(79,110,247,.12); }
 /* 历史计划：按日期分组，点表头可折叠 */
 .wb-todo-group { border-bottom: 1px solid var(--border); }
 .wb-todo-group:last-child { border-bottom: none; }
@@ -892,23 +920,33 @@ label { font-size: 13px; color: var(--text2); }
 /* 序号旁的 6px 色点：与明细引导线同色，收起明细时用于识别计划 */
 .wb-todo-dot { width: 6px; height: 6px; margin: 0 -3px; border-radius: 50%; background: var(--tintbar, var(--border)); flex-shrink: 0; }
 .wb-todo-item.done .wb-todo-dot { opacity: .45; }
-.wb-todo-sel { appearance: none; max-width: 92px; height: 22px; padding: 0 10px; border: 1px dashed var(--border); border-radius: 20px; background: transparent; font-size: 11px; color: var(--text3); cursor: pointer; font-family: inherit; flex-shrink: 0; outline: none; text-align: center; }
+.wb-todo-sel { appearance: none; max-width: 92px; height: 22px; padding: 0 10px; border: 1px dashed #e5e7eb; border-radius: 20px; background: transparent; font-size: 11px; color: #9ca3af; cursor: pointer; font-family: inherit; flex-shrink: 0; outline: none; text-align: center; opacity: .6; transition: opacity .15s, border-color .15s, color .15s; }
+.wb-todo-item:hover .wb-todo-sel, .wb-todo-sel:focus { opacity: 1; }
 .wb-todo-sel:hover, .wb-todo-sel:focus { border-style: solid; border-color: var(--text3); color: var(--text2); }
 /* 优先级/分类胶囊降一档浓度：原色底压在清单上太跳，同色系淡底就够分辨了 */
 .wb-todo-pri-sel.p-high { background: #fde8e4; color: #b4483a; border: 1px solid transparent; font-weight: 600; }
 .wb-todo-pri-sel.p-mid { background: #fbeed6; color: #a2721f; border: 1px solid transparent; font-weight: 600; }
 .wb-todo-pri-sel.p-low { background: #eceff4; color: #6b7684; border: 1px solid transparent; font-weight: 600; }
-.wb-todo-cat-sel.has-cat { background: #eee9f7; color: #7560a8; border: 1px solid transparent; }
+/* 分类色彩编码：按分类名稳定落到 6 组淡底/深字，同名同色，新增分类自动取色 */
+.wb-todo-cat-sel.ct-0, .wb-cat-chip.ct-0 { --ct-bg: #eff6ff; --ct-fg: #2563eb; }
+.wb-todo-cat-sel.ct-1, .wb-cat-chip.ct-1 { --ct-bg: #ecfdf5; --ct-fg: #047857; }
+.wb-todo-cat-sel.ct-2, .wb-cat-chip.ct-2 { --ct-bg: #fffbeb; --ct-fg: #b45309; }
+.wb-todo-cat-sel.ct-3, .wb-cat-chip.ct-3 { --ct-bg: #f5f3ff; --ct-fg: #6d28d9; }
+.wb-todo-cat-sel.ct-4, .wb-cat-chip.ct-4 { --ct-bg: #ecfeff; --ct-fg: #0e7490; }
+.wb-todo-cat-sel.ct-5, .wb-cat-chip.ct-5 { --ct-bg: #fdf2f8; --ct-fg: #be185d; }
+.wb-todo-cat-sel.has-cat { background: var(--ct-bg, #eee9f7); color: var(--ct-fg, #7560a8); border: 1px solid transparent; opacity: 1; }
+.wb-todo-pri-sel.p-high, .wb-todo-pri-sel.p-mid, .wb-todo-pri-sel.p-low { opacity: 1; }
 /* 计划明细：入口按钮 + 展开区（左侧引导线体现从属关系） */
 .wb-todo-detail-btn { border: 1px solid var(--border); background: var(--card); color: var(--text3); font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 5px; cursor: pointer; transition: .15s; flex-shrink: 0; font-family: inherit; white-space: nowrap; }
 .wb-todo-detail-btn:hover, .wb-todo-detail-btn.open { border-color: var(--primary); color: var(--primary); }
 .wb-todo-detail-btn.open { background: #eef1fe; }
-.wb-todo-detail-box { position: relative; background: #f8fafc; border-top: 1px dashed #bfcde2; border-bottom: 1px solid #cdd9e9; padding: 8px 16px 10px 54px; }
-.wb-todo-detail-box::before { content: ''; position: absolute; left: 40px; top: 10px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--tintbar, var(--border)); }
+/* 明细区：去掉浅蓝盒子与虚线框，只留缩进 + 左侧一条极细灰实线表达父子层级 */
+.wb-todo-detail-box { position: relative; background: transparent; border: 0; border-left: 2px solid #e5e7eb; border-bottom: 1px solid #eef1f5; margin: 0 16px 0 24px; padding: 2px 0 6px 14px; }
 .wb-td-empty { font-size: 12px; color: var(--text3); margin-bottom: 6px; }
 /* 长文本明细会换行，行间加细分割线、图标吸顶对齐，避免几条明细糊成一片 */
-.wb-td-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 6px; margin: 0 -6px; border-radius: 6px; font-size: 12.5px; line-height: 1.65; color: var(--text2); transition: background .15s; }
-.wb-td-item + .wb-td-item { border-top: 1px solid #cdd9e9; }
+/* 明细比正文小 1px，跟随设置里的字号整体缩放 */
+.wb-td-item { display: flex; align-items: flex-start; gap: 8px; padding: 5px 6px; margin: 0 -6px; border-radius: 6px; font-size: calc(var(--wb-todo-fs, 13px) - 1px); line-height: 1.7; color: var(--text2); transition: background .15s; }
+.wb-td-item + .wb-td-item { border-top: 1px solid #eef1f5; }
 .wb-td-item > input[type=checkbox],
 .wb-td-item > .wb-td-seq,
 .wb-td-item > .wb-td-edit,
@@ -916,9 +954,8 @@ label { font-size: 13px; color: var(--text2); }
 .wb-td-seq { min-width: 16px; height: 16px; padding: 0; background: transparent; color: var(--text3); font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .wb-td-item.done .wb-td-seq { opacity: .6; }
 .wb-td-item:hover { background: rgba(79,110,247,.07); }  /* 半透明蓝色叠加，兼容每条计划不同底色 */
-.wb-td-item input[type=checkbox] { width: 14px; height: 14px; accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
-.wb-td-item .wb-td-text { flex: 1; min-width: 0; word-break: break-all; }
-.wb-td-item.done .wb-td-text { text-decoration: line-through; color: var(--text3); }
+.wb-td-item .wb-td-text { flex: 1; min-width: 0; word-break: break-all; transition: color .28s ease; }
+.wb-td-item.done .wb-td-text { text-decoration: line-through; text-decoration-color: #cbd5e1; color: #9ca3af; }
 .wb-td-del { opacity: .45; border: none; background: transparent; color: var(--text3); font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 5px; cursor: pointer; transition: .15s; flex-shrink: 0; font-family: inherit; }
 .wb-td-item:hover .wb-td-del { opacity: 1; color: #dc2626; }
 .wb-td-del:hover { background: #fee2e2; color: var(--red); }
@@ -926,38 +963,44 @@ label { font-size: 13px; color: var(--text2); }
 .wb-td-edit { opacity: .45; border: none; background: transparent; color: var(--text3); font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 5px; cursor: pointer; transition: .15s; flex-shrink: 0; font-family: inherit; }
 .wb-td-item:hover .wb-td-edit { opacity: 1; color: var(--primary); }
 .wb-td-edit:hover { background: #eef1fe; }
-.wb-td-text-edit { flex: 1; min-width: 0; font-size: 12.5px; font-family: inherit; padding: 2px 7px; border: 1px solid var(--primary); border-radius: 5px; background: #fff; color: var(--text); outline: none; box-shadow: 0 0 0 2px rgba(79,110,247,.12); }
+.wb-td-text-edit { flex: 1; min-width: 0; font-size: calc(var(--wb-todo-fs, 13px) - 0.5px); font-family: inherit; padding: 2px 7px; border: 1px solid var(--primary); border-radius: 5px; background: #fff; color: var(--text); outline: none; box-shadow: 0 0 0 2px rgba(79,110,247,.12); }
 /* 明细添加栏：默认收起为「+ 添加明细」链接，点击展开输入行（失焦为空自动收回） */
 .wb-td-add { display: none; gap: 6px; margin-top: 6px; }
 .wb-td-add input { flex: 1; font-size: 12px; padding: 4px 10px; }
 .wb-td-add-trigger { border: none; background: transparent; color: var(--text3); font-size: 12px; padding: 3px 0; cursor: pointer; font-family: inherit; opacity: .75; transition: .15s; }
 .wb-td-add-trigger:hover { color: var(--primary); opacity: 1; }
 
-/* ════════ 今日计划：日期立牌 + 分组清单 ════════
-   版式参考「一天一张计划卡」，但配色只用全站既有一套（白卡 / --border / --primary / --text*），
-   不另起米白+墨绿+金的主题色；唯一识别点是左侧大号日期（衬线） */
+/* ════════ 今日计划：卡片化（顶部日期卡 + 任务卡） ════════
+   两段卡片纵向排布、内容统一 900px 居中；配色仍用全站一套（白卡 / --border / --primary / --text*），
+   不另起主题色，唯一识别点是大号衬线日期 */
 /* 徽标内容为空时不要留一个空胶囊（首屏渲染前 / 当天无计划时文字为空） */
 #panel-workbench .wb-panel-badge:empty { display: none; }
 #panel-workbench .wb-sub-sep { margin: 0 6px; color: #cbd5e1; }
 #panel-workbench .wb-sub-tag { color: var(--text3); }
-/* 主体：左日期立牌 + 右清单 */
-#panel-workbench .wb-plan-body { padding: 0; flex-direction: row; }
-#panel-workbench .wb-plan-body.done-view .wb-plan-hero { display: none; }
-.wb-plan-hero {
-  width: 224px; flex-shrink: 0; border-right: 1px solid var(--border);
-  padding: 24px 20px 18px; display: flex; flex-direction: column;
-}
-.wb-hero-week { font-size: 11px; font-weight: 700; letter-spacing: 5px; color: var(--text3); }
+/* 卡片列：限宽居中，卡片之间留统一间距 */
+.wb2-stack { flex: 1; min-height: 0; width: 100%; max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.wb2-body { flex: 1; min-height: 0; display: flex; }
+#panel-workbench .wb2-card { margin-bottom: 0; padding: 0; border-radius: 12px; background: #f9fafb; border-color: #e8edf4; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+/* 顶部日期卡：左大号日期 | 中标题+问候 | 右完成度+视图切换 */
+.wb2-hero-card { flex-shrink: 0; }
+#panel-workbench .wb2-hero-card { display: flex; align-items: center; gap: 20px; padding: 15px 20px; }
+.wb2-date { flex-shrink: 0; min-width: 92px; padding-right: 20px; border-right: 1px solid var(--border); }
+.wb-hero-week { font-size: 11px; font-weight: 700; letter-spacing: 4px; color: var(--text3); }
 .wb-hero-date {
-  font-family: var(--serif); font-size: 54px; line-height: 1.08; letter-spacing: -1px;
-  color: var(--text); margin-top: 6px; font-variant-numeric: lining-nums tabular-nums;
+  font-family: var(--serif); font-size: 40px; line-height: 1.1; letter-spacing: -1px;
+  color: var(--text); margin-top: 4px; font-variant-numeric: lining-nums tabular-nums;
 }
-.wb-hero-year { font-size: 12px; letter-spacing: 2px; color: var(--text3); margin-top: 2px; }
-.wb-hero-greet { font-size: 12.5px; line-height: 1.9; color: var(--text2); margin-top: 12px; }
+.wb-hero-year { font-size: 11px; letter-spacing: 2px; color: var(--text3); margin-top: 2px; }
+.wb2-hero-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.wb2-hero-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wb2-hero-slogan { font-size: 11.5px; color: var(--text3); }
+.wb-hero-greet { font-size: 12.5px; line-height: 1.7; color: var(--text2); }
+.wb2-hero-sub { font-size: 11.5px; color: var(--text3); font-variant-numeric: tabular-nums; }
+.wb2-hero-side { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 9px; }
 /* 完成度胶囊：主色小点 + 分数 + 一排小柱（已完成的填主色） */
 .wb-hero-progress {
-  margin-top: 18px; display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; border-radius: 9px; background: var(--bg); border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-radius: 9px; background: var(--card); border: 1px solid var(--border);
 }
 .wb-hero-pip { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
 .wb-hero-done { font-size: 12px; color: var(--text2); white-space: nowrap; }
@@ -967,14 +1010,45 @@ label { font-size: 13px; color: var(--text2); }
 .wb-hero-bars i.on { background: var(--primary); }
 /* 当天还没有计划时不留一条空白的柱槽 */
 .wb-hero-bars:empty { display: none; }
-/* 右栏 */
-.wb-plan-main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 18px 20px 14px; }
-#panel-workbench .wb-todo-input-row { margin-bottom: 14px; }
-/* 清单：去掉浅蓝底盒子，改为分组 + 发丝线（与卡片分隔线同色） */
-#panel-workbench .wb-todo-list { border: none; background: transparent; border-radius: 0; display: flex; flex-direction: column; }
+/* 全部完成：进度胶囊转绿 + 一次轻微缩放/呼吸，配合一条 Toast 庆祝 */
+.wb-hero-progress { transition: background .3s, border-color .3s; }
+.wb-hero-progress.full { background: #f0fdf4; border-color: #bbf7d0; }
+.wb-hero-progress.full .wb-hero-pip { background: var(--green); }
+.wb-hero-progress.full .wb-hero-done,
+.wb-hero-progress.full .wb-hero-done b { color: #15803d; }
+.wb-hero-progress.full .wb-hero-bars i.on { background: var(--green); }
+@keyframes wbHeroPop { 0% { transform: scale(1); } 40% { transform: scale(1.05); } 100% { transform: scale(1); } }
+@keyframes wbHeroGlow { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.34); } 100% { box-shadow: 0 0 0 9px rgba(34,197,94,0); } }
+.wb-hero-progress.just-full { animation: wbHeroPop .45s ease, wbHeroGlow .8s ease; }
+/* 任务卡：录入行 / 分类筛选 / 清单 共用左边缘（与输入框、添加按钮严格对齐） */
+.wb2-task-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#panel-workbench .wb-plan-body { padding: 14px 16px 12px; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#panel-workbench .wb-todo-input-row { margin-bottom: 12px; }
+/* 录入行：浅灰无边输入框（聚焦才浮出白底描边）+ 主色圆角按钮带极轻投影 */
+#panel-workbench .wb-todo-input-row input { background: #f3f4f6; border-color: transparent; border-radius: 8px; padding: 0 12px; }
+#panel-workbench .wb-todo-input-row input:hover { background: #eef0f4; border-color: transparent; }
+#panel-workbench .wb-todo-input-row input:focus { background: #fff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,110,247,.12); }
+#panel-workbench .wb-todo-input-row .btn-primary { border-radius: 8px; box-shadow: 0 1px 2px rgba(79,110,247,.28); }
+#panel-workbench .wb-todo-input-row .btn-primary:hover { box-shadow: 0 4px 12px rgba(79,110,247,.3); }
+/* 清单：去盒子，计划本身变成卡片（卡片与卡片间 8px） */
+#panel-workbench .wb-todo-list { border: none; background: transparent; border-radius: 0; display: flex; flex-direction: column; gap: 8px; }
 #panel-workbench .wb-todo-empty { margin: auto 0; padding: 0 20px; line-height: 2.2; }
 #panel-workbench .wb-todo-empty .wb-empty-sub { font-size: 12px; }
-#panel-workbench .wb-todo-item { padding: 8px 4px; }
+/* 计划卡：白底 + 细边 + 圆角，悬停只提亮描边与投影，不改底色（与右卡同一套卡片语言） */
+#panel-workbench .wb-todo-item {
+  padding: 10px 12px;
+  border: 1px solid #e8edf4;
+  border-radius: 10px;
+  background: var(--card);
+  transition: border-color .15s, box-shadow .15s;
+}
+#panel-workbench .wb-todo-item:hover { background: var(--card); border-color: #c7d2fe; box-shadow: 0 2px 10px rgba(79,110,247,.08); }
+#panel-workbench .wb-todo-item.done { background: #fbfcfd; border-color: #eef1f5; }
+#panel-workbench .wb-todo-item.done:hover { border-color: #e2e8f0; box-shadow: none; }
+/* 明细进卡片内部：左侧细实线表达从属，不再出卡片边界 */
+#panel-workbench .wb-todo-detail-box { border-bottom: none; margin: 2px 0 0 2px; padding: 2px 0 2px 12px; }
+/* 已完成视图：日期分组里的卡片也需要间距与内边距 */
+#panel-workbench .wb-todo-group-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
 
 /* ── 分类：筛选条 + 管理弹层 ──
    分类集合存后端（/api/workbench/todo-cats），这里只管展示；
@@ -984,6 +1058,9 @@ label { font-size: 13px; color: var(--text2); }
 .wb-cat-chip { height: var(--btn-h-xs); padding: 0 11px; border: 1px solid var(--border); border-radius: 20px; background: var(--card); color: var(--text2); font-size: 11.5px; font-family: inherit; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; transition: .15s; }
 .wb-cat-chip:hover { border-color: var(--text3); color: var(--text); }
 .wb-cat-chip.on { background: #eef1fe; border-color: transparent; color: var(--primary); font-weight: 600; }
+/* 选中态沿用该分类自己的色调，与清单里的分类标签同色 */
+.wb-cat-chip.on.ct-0, .wb-cat-chip.on.ct-1, .wb-cat-chip.on.ct-2,
+.wb-cat-chip.on.ct-3, .wb-cat-chip.on.ct-4, .wb-cat-chip.on.ct-5 { background: var(--ct-bg); border-color: transparent; color: var(--ct-fg); font-weight: 600; }
 .wb-cat-manage { margin-left: auto; height: var(--btn-h-xs); padding: 0 10px; border: 1px dashed var(--border); border-radius: 20px; background: transparent; color: var(--text3); font-size: 11.5px; font-family: inherit; cursor: pointer; flex-shrink: 0; transition: .15s; }
 .wb-cat-manage:hover { border-style: solid; border-color: var(--primary); color: var(--primary); }
 /* 管理弹层：列表 + 底部新增（改名/删除对计划的影响在这里一并说清） */
@@ -1053,11 +1130,8 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
 .wb-note-editor-wrap .ql-toolbar.ql-snow { font-family: var(--sans); }
 .wb-note-editor-wrap .ql-editor {
   padding: 24px clamp(28px, 3.2%, 56px) 64px;
-  /* 极浅底 + 24px 点阵：只负责把大片白底压住，不抢正文 */
-  background-color: #fcfdff;
-  background-image: radial-gradient(rgba(148,163,184,.20) 1px, transparent 1px);
-  background-size: 24px 24px;
-  background-position: 2px 4px;
+  /* 无纹理极浅暖白：点阵/横线会与正文形成规则噪点，长文久看发累，这里只留一层台面色 */
+  background-color: #fcfcf9;
   font-size: 15px; color: #1e293b;
 }
 .wb-plain-textarea {
@@ -1065,10 +1139,7 @@ input.wb-note-title-input::placeholder { color: #cbd5e1; font-weight: 600; }
   border: none; outline: none; padding: 24px clamp(28px, 3.2%, 56px);
   font-size: 15px; resize: none;
   color: var(--text); font-family: inherit;
-  background-color: #fcfdff;
-  background-image: radial-gradient(rgba(148,163,184,.20) 1px, transparent 1px);
-  background-size: 24px 24px;
-  background-position: 2px 4px;
+  background-color: #fcfcf9;
 }
 /* 占位字对齐正文首行（与上面内边距同值） */
 .wb-note-editor-wrap .ql-editor.ql-blank::before { left: clamp(28px, 3.2%, 56px); right: clamp(28px, 3.2%, 56px); top: 24px; font-style: normal; color: #c3ccdb; line-height: 1.9; }
@@ -3766,49 +3837,54 @@ body:
     </div>
   </div>
 
-  <!-- ════════ Tab: 今日计划 ════════ -->
+  <!-- ════════ Tab: 今日计划（卡片化：顶部日期卡 + 任务卡） ════════ -->
   <div class="panel" id="panel-workbench">
-    <div class="card wb-section wb-plan-card">
-      <!-- 顶部工具条：标题 + 日期 + 未完成/已完成视图切换 -->
-      <div class="wb-panel-head">
-        <div class="wb-panel-ico">🗓️</div>
-        <div>
-          <div class="wb-panel-title">今日计划 <span class="wb-panel-badge" id="wb-todo-stats"></span></div>
-          <div class="wb-section-sub"><span id="wb-todo-date"></span><span class="wb-sub-sep">·</span><span class="wb-sub-tag">建立节奏，保持清晰</span></div>
+    <div class="wb2-stack">
+      <!-- 顶部横跨卡：星期/大号日期 + 标题/问候 + 完成度 + 未完成/已完成切换 -->
+      <div class="card wb2-card wb2-hero-card" id="wb-plan-hero">
+        <div class="wb2-date">
+          <div class="wb-hero-week" id="wb-hero-week">星期三</div>
+          <div class="wb-hero-date" id="wb-hero-date">11.11</div>
+          <div class="wb-hero-year" id="wb-hero-year">2026</div>
         </div>
-        <div class="wb-panel-head-right">
+        <div class="wb2-hero-main">
+          <div class="wb2-hero-title">
+            <span class="wb-panel-ico">🗓️</span>
+            <span class="wb-panel-title">今日计划</span>
+            <span class="wb-panel-badge" id="wb-todo-stats"></span>
+            <span class="wb2-hero-slogan">建立节奏，保持清晰</span>
+          </div>
+          <div class="wb-hero-greet" id="wb-hero-greet">早上好，今天也请稳步推进。</div>
+          <div class="wb2-hero-sub" id="wb-todo-date"></div>
+        </div>
+        <div class="wb2-hero-side">
+          <div class="wb-hero-progress" title="今日完成度">
+            <span class="wb-hero-pip"></span>
+            <span class="wb-hero-done">已完成 <b id="wb-hero-done">0</b> / <b id="wb-hero-total">0</b></span>
+            <span class="wb-hero-bars" id="wb-hero-bars"></span>
+          </div>
           <div class="wb-seg">
             <button class="wb-seg-btn active" id="wb-todo-tab-undone" onclick="switchTodoView('undone')">未完成</button>
             <button class="wb-seg-btn" id="wb-todo-tab-done" onclick="switchTodoView('done')">已完成</button>
           </div>
         </div>
       </div>
-      <div class="wb-plan-body" id="wb-plan-body">
-        <!-- 左栏：日期立牌（星期 / 大号日期 / 问候语 / 完成度小柱） -->
-        <aside class="wb-plan-hero" id="wb-plan-hero">
-          <div class="wb-hero-week" id="wb-hero-week">星期一</div>
-          <div class="wb-hero-date" id="wb-hero-date">11.09</div>
-          <div class="wb-hero-year" id="wb-hero-year">2026</div>
-          <div class="wb-hero-greet" id="wb-hero-greet">早上好，今天也请稳步推进。</div>
-          <div class="wb-hero-progress" title="今日完成度">
-            <span class="wb-hero-pip"></span>
-            <span class="wb-hero-done">已完成 <b id="wb-hero-done">0</b> / <b id="wb-hero-total">0</b></span>
-            <span class="wb-hero-bars" id="wb-hero-bars"></span>
-          </div>
-        </aside>
-        <!-- 右栏：录入行 + 分组清单（待完成 / 已完成） -->
-        <div class="wb-plan-main">
-          <div class="wb-todo-input-row" id="wb-todo-input-row">
-            <input type="text" id="wb-todo-input" placeholder="输入计划内容，回车添加" onkeydown="if(event.key==='Enter')addTodo()">
-            <button class="btn btn-primary" onclick="addTodo()">添加</button>
-          </div>
-          <!-- 分类筛选条：两个视图共用；右侧「管理分类」可新增 / 重命名 / 删除 -->
-          <div class="wb-cat-bar" id="wb-cat-bar">
-            <span class="wb-cat-chips" id="wb-cat-chips"></span>
-            <button class="wb-cat-manage" onclick="openTodoCatModal()" title="新增 / 重命名 / 删除分类">管理分类</button>
-          </div>
-          <div class="wb-todo-list" id="wb-todo-list">
-            <div class="wb-todo-empty">暂无计划</div>
+      <!-- 主体：计划卡片列表（每条计划一张卡片，卡片内展开明细） -->
+      <div class="wb2-body">
+        <div class="card wb2-card wb2-task-card">
+          <div class="wb-plan-body" id="wb-plan-body">
+            <div class="wb-todo-input-row" id="wb-todo-input-row">
+              <input type="text" id="wb-todo-input" placeholder="输入计划内容，回车添加" onkeydown="if(event.key==='Enter')addTodo()">
+              <button class="btn btn-primary" onclick="addTodo()">添加</button>
+            </div>
+            <!-- 分类筛选条：两个视图共用；右侧「管理分类」可新增 / 重命名 / 删除 -->
+            <div class="wb-cat-bar" id="wb-cat-bar">
+              <span class="wb-cat-chips" id="wb-cat-chips"></span>
+              <button class="wb-cat-manage" onclick="openTodoCatModal()" title="新增 / 重命名 / 删除分类">管理分类</button>
+            </div>
+            <div class="wb-todo-list" id="wb-todo-list">
+              <div class="wb-todo-empty">暂无计划</div>
+            </div>
           </div>
         </div>
       </div>
@@ -14942,17 +15018,21 @@ function casesReadKvRows(id) {
 
 /* ===== 代码区字号（请求 Body / 响应 Body / 批量运行结果 / 抓包页 / 数据库工作台各自记忆） ===== */
 var _CASES_FS_KEY = 'apiTester.codeFontSize';
-var _CASES_FS_DEF = { req: 13, resp: 12.5, batch: 13, cap: 12.5, db: 13 };   // 与 CSS 默认值保持一致
+var _CASES_FS_DEF = { req: 13, resp: 12.5, batch: 13, cap: 12.5, db: 13, todo: 13 };   // 与 CSS 默认值保持一致
 var _CASES_FS_MIN = 10, _CASES_FS_MAX = 24;
+// 今日计划是正文不是代码，范围收窄一档：太小看不清、太大撑爆卡片行内胶囊
+var _WB_TODO_FS_MIN = 12, _WB_TODO_FS_MAX = 20;
 
 function _casesFsClamp(kind, v) {
   v = parseFloat(v);
   if (!isFinite(v)) v = _CASES_FS_DEF[kind] || 13;
-  return Math.min(_CASES_FS_MAX, Math.max(_CASES_FS_MIN, Math.round(v * 2) / 2));
+  var lo = kind === 'todo' ? _WB_TODO_FS_MIN : _CASES_FS_MIN;
+  var hi = kind === 'todo' ? _WB_TODO_FS_MAX : _CASES_FS_MAX;
+  return Math.min(hi, Math.max(lo, Math.round(v * 2) / 2));
 }
 
 var _casesFontSizes = (function() {
-  var out = { req: _CASES_FS_DEF.req, resp: _CASES_FS_DEF.resp, batch: _CASES_FS_DEF.batch, cap: _CASES_FS_DEF.cap, db: _CASES_FS_DEF.db };
+  var out = { req: _CASES_FS_DEF.req, resp: _CASES_FS_DEF.resp, batch: _CASES_FS_DEF.batch, cap: _CASES_FS_DEF.cap, db: _CASES_FS_DEF.db, todo: _CASES_FS_DEF.todo };
   try {
     var raw = JSON.parse(localStorage.getItem(_CASES_FS_KEY) || '{}') || {};
     if (raw && typeof raw === 'object') {
@@ -14961,6 +15041,7 @@ var _casesFontSizes = (function() {
       if (raw.batch != null) out.batch = _casesFsClamp('batch', raw.batch);
       if (raw.cap != null) out.cap = _casesFsClamp('cap', raw.cap);
       if (raw.db != null) out.db = _casesFsClamp('db', raw.db);
+      if (raw.todo != null) out.todo = _casesFsClamp('todo', raw.todo);
     }
   } catch (e) {}
   return out;
@@ -14978,6 +15059,7 @@ function casesFontApply() {
   st.setProperty('--batch-fs', _casesFsFmt('batch'));
   st.setProperty('--cap-fs', _casesFsFmt('cap'));
   st.setProperty('--db-fs', _casesFsFmt('db'));
+  st.setProperty('--wb-todo-fs', _casesFsFmt('todo'));
   // 不往设置面板的输入框回写：用户正在输入时会被打断，打开设置时由 settingsFontSync 同步
   // 高亮层与 textarea 同字号，字号变了要重画一层，避免错位
   casesHlRefresh();
@@ -14987,14 +15069,14 @@ function casesFontApply() {
 }
 
 function casesFontSet(kind, v) {
-  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db') return;
+  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db' && kind !== 'todo') return;
   _casesFontSizes[kind] = _casesFsClamp(kind, v);
   try { localStorage.setItem(_CASES_FS_KEY, JSON.stringify(_casesFontSizes)); } catch (e) {}
   casesFontApply();
 }
 
 function casesFontStep(kind, delta) {
-  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db') return;
+  if (kind !== 'req' && kind !== 'resp' && kind !== 'batch' && kind !== 'cap' && kind !== 'db' && kind !== 'todo') return;
   var cur = _casesFontSizes[kind];
   if (cur == null) cur = _CASES_FS_DEF[kind];
   casesFontSet(kind, cur + delta);
@@ -25648,6 +25730,7 @@ document.addEventListener('keydown', function(e) {
 
 // ── 计划渲染（未完成 / 已完成 两个视图） ──
 var _todoView = 'undone';
+var _heroFullPrev = null;  // 上一轮完成度是否已满：只在「未满→满」那一次弹庆祝，避免重复渲染扰民
 var _todoCollapsed = {};   // 已完成按完成日期分组，折叠状态：{ '2026-09-23': true }
 var _todoEdit = null;     // 正在行内修改的项：{ id, detail(空=主计划), value }
 var TODO_TINT_COUNT = 6;  // 计划底色档数（tint-0..5），新建时按顺序循环分配
@@ -25716,16 +25799,10 @@ function _todoItemHtml(t, seqLabel) {
   }
   var seqHtml = seqLabel ? '<span class="wb-todo-seq' + (t.done ? ' done' : '') + '">' + seqLabel + '</span>' : '';
   var badgeHtml = t.done ? '<span class="wb-todo-badge done">已完成</span>' : '';
-  // 行内胶囊：每条计划可单独设置优先级 / 分类（change 即保存）；未设置为虚线 +标签
-  var priSelHtml = '<select class="wb-todo-sel wb-todo-pri-sel' + (t.priority ? ' p-' + t.priority : '') + '" title="优先级" onchange="updateTodoField(\'' + escHtml(t.id) + '\',\'priority\',this.value)">' +
-    '<option value="">+ 优先级</option>' +
-    '<option value="high"' + (t.priority === 'high' ? ' selected' : '') + '>高</option>' +
-    '<option value="mid"' + (t.priority === 'mid' ? ' selected' : '') + '>中</option>' +
-    '<option value="low"' + (t.priority === 'low' ? ' selected' : '') + '>低</option>' +
-    '</select>';
+  // 卡片上只留「分类」与「明细」两个入口（优先级字段仍在数据里，只是不再占位）
   var catOpts = _todoCatOptions();
   // 行内下拉只管选，新增 / 改名 / 删除统一在「管理分类」里做
-  var catSelHtml = '<select class="wb-todo-sel wb-todo-cat-sel' + (t.category ? ' has-cat' : '') + '" title="分类" onchange="updateTodoField(\'' + escHtml(t.id) + '\',\'category\',this.value)">' +
+  var catSelHtml = '<select class="wb-todo-sel wb-todo-cat-sel' + (t.category ? ' has-cat' + _todoCatTone(t.category) : '') + '" title="分类" onchange="updateTodoField(\'' + escHtml(t.id) + '\',\'category\',this.value)">' +
     '<option value="">+ 分类</option>' +
     catOpts.map(function(c) { return '<option value="' + escHtml(c) + '"' + (t.category === c ? ' selected' : '') + '>' + escHtml(c) + '</option>'; }).join('') +
     '</select>';
@@ -25747,12 +25824,13 @@ function _todoItemHtml(t, seqLabel) {
       '<span class="wb-todo-dot' + tintCls + '"></span>' +
       seqHtml +
       textHtml +
-      badgeHtml + meta + priSelHtml + catSelHtml + detailBtn +
+      badgeHtml + meta + catSelHtml + detailBtn +
       '<button class="wb-todo-copy ic-btn ic-copy" title="复制这条计划（含明细）" onclick="copyTodoItem(\'' + tidJs + '\')"></button>' +
       '<button class="wb-todo-edit ic-btn ic-edit" title="修改计划内容" onmousedown="event.preventDefault()" onclick="_todoStartEdit(\'' + tidJs + '\')"></button>' +
       '<button class="wb-todo-del ic-btn ic-close" title="删除计划" onclick="deleteTodo(\'' + escHtml(t.id) + '\')"></button>' +
     '</div>' +
-    '</div>' + detailBox;
+    detailBox +
+    '</div>';
 }
 
 // 明细展开区：子条目（可勾选/删除）+ 按需展开的添加栏
@@ -25812,6 +25890,20 @@ function _updateTodoHero(items, done) {
   var bars = '';
   for (var i = 0; i < n; i++) bars += '<i class="' + (i < filled ? 'on' : '') + '" style="height:' + hs[i % hs.length] + 'px"></i>';
   document.getElementById('wb-hero-bars').innerHTML = bars;
+  // 全部完成：胶囊转绿，并在「未满 → 满」的那一次给一下缩放/呼吸 + 一条 Toast
+  var allDone = items.length > 0 && done === items.length;
+  var box = document.querySelector('#panel-workbench .wb-hero-progress');
+  if (box) {
+    box.classList.toggle('full', allDone);
+    if (allDone && _heroFullPrev === false) {
+      box.classList.remove('just-full');
+      void box.offsetWidth;   // 读一次布局，让同一元素上的动画能重新播放
+      box.classList.add('just-full');
+      showToast('今日 ' + items.length + ' 项计划全部完成', 1800);
+    }
+    if (!allDone) box.classList.remove('just-full');
+  }
+  _heroFullPrev = allDone;
 }
 
 // 未完成的展示顺序：今天创建的按创建时间升序在前，更早的积压项按时间倒序接在后面
@@ -25974,6 +26066,13 @@ function _todoCatOptions() {
   return out;
 }
 
+// 分类色彩编码：同名永远同色（按字符码求和取模 6），新建分类不用额外配色
+function _todoCatTone(name) {
+  var s = String(name || ''), n = 0;
+  for (var i = 0; i < s.length; i++) n += s.charCodeAt(i);
+  return ' ct-' + (n % 6);
+}
+
 // 当前筛选是否命中这条计划
 function _todoCatMatch(t) {
   if (!_todoCatFilter) return true;
@@ -26011,7 +26110,8 @@ function renderTodoCatBar() {
     if (n) chips.push({ v: c, label: c, tip: '「' + c + '」' + n + ' 条计划' });
   });
   box.innerHTML = chips.map(function(c) {
-    return '<button class="wb-cat-chip' + (c.v === _todoCatFilter ? ' on' : '') + '" title="' + escHtml(c.tip) + '" ' +
+    var tone = (c.v && c.v !== '__none__') ? _todoCatTone(c.v) : '';
+    return '<button class="wb-cat-chip' + tone + (c.v === _todoCatFilter ? ' on' : '') + '" title="' + escHtml(c.tip) + '" ' +
       'data-cat="' + escHtml(c.v) + '" onclick="setTodoCatFilter(this.dataset.cat)">' + escHtml(c.label) + '</button>';
   }).join('');
 }
@@ -32223,7 +32323,7 @@ function settingsNav(name) {
 
 // 字号：输入框（实时生效）+ 失焦规范化 + 恢复默认
 function settingsFontSync() {
-  ['req', 'resp', 'batch', 'cap', 'db'].forEach(function(k) {
+  ['req', 'resp', 'batch', 'cap', 'db', 'todo'].forEach(function(k) {
     var el = document.getElementById('set-fs-' + k);
     if (el) el.value = _casesFsClamp(k, _casesFontSizes[k]);
   });
@@ -32491,6 +32591,18 @@ async function _loadSettingsPaths() {
         </div>
       </div>
       <div class="sp-pane" data-pane="appearance">
+        <div class="sp-row">
+          <div class="sp-row-label"><span class="sp-row-mod">工作台</span>今日计划字号<span class="sp-row-desc">工作台 · 计划正文与明细，12~20px</span></div>
+          <div class="sp-row-ctl">
+            <span class="sp-num">
+              <input type="number" id="set-fs-todo" min="12" max="20" step="0.5" inputmode="decimal"
+                oninput="settingsFontEdit('todo', this)" onchange="settingsFontCommit('todo', this)">
+              <span class="sp-unit">px</span>
+            </span>
+            <button class="btn btn-sm" onclick="settingsFontReset('todo')">恢复默认</button>
+            <span class="sp-hint">默认 13px</span>
+          </div>
+        </div>
         <div class="sp-row">
           <div class="sp-row-label"><span class="sp-row-mod">接口测试</span>请求 Body 字号<span class="sp-row-desc">接口用例 · 请求体编辑区（JSON / 原始文本），10~24px</span></div>
           <div class="sp-row-ctl">
