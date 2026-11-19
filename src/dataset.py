@@ -3,7 +3,11 @@
 
 导入的 Excel / CSV 存成 data/_datasets/<名称>.json：
     {"name": "...", "source": "xxx.xlsx", "headers": ["userName", "city"],
-     "rows": [["alice", "上海"], ...], "updated_at": "2026-11-05 16:42:08"}
+     "rows": [["alice", "上海"], ...], "row_types": ["normal", "error", ...],
+     "updated_at": "2026-11-05 16:42:08"}
+
+row_types 与 rows 一一对应，记录这一行是正向入参（normal）还是故意传错的
+异常入参（error），运行时随记录一起下发，报告里据此判断「拦截成功 / 漏测」。
 
 接口里写 ${字段名} 引用当前数据集的列，运行时按行执行：
 第一行跑完整串步骤 → 第二行再跑一遍。没引用任何字段时照常只跑一次。
@@ -91,6 +95,16 @@ def _norm_rows(rows, width):
     return out
 
 
+def _norm_types(types, count):
+    """行标记对齐到 count 行：只有 "error" 算异常，其余（缺省/未知值）一律 normal"""
+    src = list(types) if isinstance(types, (list, tuple)) else []
+    out = []
+    for i in range(count):
+        t = str(src[i] or "").strip().lower() if i < len(src) else ""
+        out.append("error" if t == "error" else "normal")
+    return out
+
+
 # ── 读 / 写 ─────────────────────────────────────────────
 def list_datasets():
     _ensure_dir()
@@ -128,13 +142,15 @@ def load(name):
     d["name"] = d.get("name") or _safe_name(name)
     d["headers"] = d.get("headers") or []
     d["rows"] = d.get("rows") or []
+    d["row_types"] = _norm_types(d.get("row_types"), len(d["rows"]))
     d["source"] = d.get("source") or ""
     d["updated_at"] = d.get("updated_at") or ""
     return d
 
 
-def save(name, headers, rows, source=None):
-    """整表保存（导入 / 编辑 / 加行删行都走这里），返回保存后的数据集"""
+def save(name, headers, rows, source=None, row_types=None):
+    """整表保存（导入 / 编辑 / 加行删行都走这里），返回保存后的数据集
+    row_types 不传时沿用旧文件的标记（加行删行只改 rows，不该把标记清空）"""
     safe = _safe_name(name)
     if not safe:
         raise ValueError("数据集名称不能为空")
@@ -145,11 +161,14 @@ def save(name, headers, rows, source=None):
     _ensure_dir()
     path = _path(safe)
     old = load(safe) or {}
+    if row_types is None:
+        row_types = old.get("row_types") or []
     data = {
         "name": safe,
         "source": source if source is not None else (old.get("source") or ""),
         "headers": headers,
         "rows": rows,
+        "row_types": _norm_types(row_types, len(rows)),
         "updated_at": _now(),
     }
     with _LOCK:
@@ -195,7 +214,10 @@ def set_active(name):
 
 # ── 运行时：按行展开 ────────────────────────────────────
 def rows_for_steps(ordered_steps):
-    """当前数据集被这些步骤引用时，返回 [(行标签, {字段: 值}), ...]；没引用返回 None"""
+    """当前数据集被这些步骤引用时，返回 [(行标签, {字段: 值}, 行标记), ...]；没引用返回 None
+
+    行标记 expected_type：normal（正向入参）/ error（故意传错的异常入参）。
+    """
     name = active_name()
     if not name:
         return None
@@ -217,27 +239,29 @@ def rows_for_steps(ordered_steps):
     cols = [h for h in data["headers"] if h in used]
     if not cols:
         return None
+    types = data.get("row_types") or []
     out = []
     for i, row in enumerate(data["rows"], 1):
         vals = {}
         for c in cols:
             idx = data["headers"].index(c)
             vals[c] = row[idx] if idx < len(row) else ""
-        out.append(("第%d行" % i, vals))
+        etype = types[i - 1] if i - 1 < len(types) else "normal"
+        out.append(("第%d行" % i, vals, etype))
     return out
 
 
 def first_row_for_steps(ordered_steps):
     """单次发送（即发即看）只能跑一行，取当前数据集第一行
 
-    返回 {"name": 数据集名, "label": 行标签, "values": {字段: 值}}；
+    返回 {"name": 数据集名, "label": 行标签, "values": {字段: 值}, "expected_type": normal|error}；
     当前接口没引用任何数据集字段时返回 None。
     """
     rows = rows_for_steps(ordered_steps)
     if not rows:
         return None
-    label, vals = rows[0]
-    return {"name": active_name(), "label": label, "values": vals}
+    label, vals, etype = rows[0]
+    return {"name": active_name(), "label": label, "values": vals, "expected_type": etype}
 
 
 # ── 导入 Excel / CSV ────────────────────────────────────

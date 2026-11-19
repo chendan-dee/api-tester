@@ -24,6 +24,7 @@
 """
 
 import asyncio
+import base64
 import fnmatch
 import gzip
 import json
@@ -31,6 +32,7 @@ import os
 import queue
 import random
 import re
+import socket
 import threading
 import time
 import urllib.request
@@ -45,6 +47,9 @@ if not _BREAK_URL and REPORT_URL.endswith("/api/capture/report"):
     _BREAK_URL = REPORT_URL[: -len("/api/capture/report")] + "/api/capture/breakpoint/hit"
 
 MAX_BODY = 256 * 1024           # 单个 body 上报上限（256KB，超出截断）
+# 二进制响应（图片 / 文件下载）原样保存的上限：超出的只上报体积，详情页提示「过大未保存」。
+# 二进制以 base64 上报（比原始字节大 1/3），2MB 原始 ≈ 2.7MB 上报，只在命中二进制时才发生。
+_BIN_SAVE_MAX = 2 * 1024 * 1024
 _Q = queue.Queue(maxsize=8000)  # 队列满时丢弃新记录，绝不阻塞代理
 
 # 攒批上报：单条流量两次上报（pending + 终报）不再各发一次 HTTP，降低主服务压力
@@ -310,11 +315,14 @@ def _break_flow_info(flow, phase):
         "path": req.path,
         "req_headers": _headers_dict(req),
         "req_body": _decode_body(req),
+        "http_version": _msg_http_version(req),
     }
     if phase == "response" and flow.response is not None:
         info["status"] = flow.response.status_code
         info["resp_headers"] = _headers_dict(flow.response)
         info["resp_body"] = _decode_body(flow.response)
+        info["resp_http_version"] = _msg_http_version(flow.response)
+        info["resp_reason"] = _msg_reason(flow.response)
     return info
 
 
@@ -543,24 +551,30 @@ def _make_throttle_cb(flow, meta_key, over_key, bw_key="bandwidth_kbps"):
     return cb
 
 
-def _decode_streamed(raw, msg):
-    """解码流式累积的原始 body：先按 Content-Encoding 解压，再按文本展示"""
-    enc = ""
+def _unzip_raw(raw, msg):
+    """按 Content-Encoding 解压流式累积的原始字节（限体积防解压炸弹；失败则原样返回）"""
     try:
         enc = (msg.headers.get("content-encoding") or "").lower()
     except Exception:
-        pass
-    if enc and len(raw) <= 128 * 1024:  # 压缩体：限小体积尝试解压（防解压炸弹）
-        try:
-            if "gzip" in enc:
-                raw = gzip.decompress(raw)
-            elif "deflate" in enc:
-                try:
-                    raw = zlib.decompress(raw)
-                except Exception:
-                    raw = zlib.decompress(raw, -15)  # raw deflate 流
-        except Exception:
-            pass  # 解压失败（流不完整等）：按原始字节降级展示
+        enc = ""
+    if not enc or len(raw) > 128 * 1024:
+        return raw
+    try:
+        if "gzip" in enc:
+            return gzip.decompress(raw)
+        if "deflate" in enc:
+            try:
+                return zlib.decompress(raw)
+            except Exception:
+                return zlib.decompress(raw, -15)  # raw deflate 流
+    except Exception:
+        pass  # 解压失败（流不完整等）：按原始字节降级
+    return raw
+
+
+def _decode_streamed(raw, msg):
+    """解码流式累积的原始 body：先按 Content-Encoding 解压，再按文本展示"""
+    raw = _unzip_raw(raw, msg)
     try:
         text = raw.decode("utf-8")
     except (UnicodeDecodeError, ValueError):
@@ -582,6 +596,125 @@ def _body_text(flow, msg, meta_key, over_key):
     if isinstance(buf, (bytes, bytearray)):
         return _decode_streamed(bytes(buf), msg)
     return _decode_body(msg)
+
+
+# ── 非文本响应：图片 / 文件下载 / 二进制流的识别与保存 ──────────────────
+# 痛点：图片、zip / pdf、application/octet-stream 被当文本渲染会满屏乱码甚至卡死页面。
+# 做法：按 Content-Type（缺失时看 URL 后缀）判定；二进制不解码成文本，原样 base64 上报
+# （体积 ≤ _BIN_SAVE_MAX），由主服务落盘，详情页据此预览图片 / 提供下载。
+_TEXT_CT_HINTS = ("text/", "json", "xml", "javascript", "ecmascript", "yaml", "csv",
+                  "x-www-form-urlencoded", "graphql", "ndjson", "x-ndjson", "x-json")
+_BIN_CT_HINTS = ("octet-stream", "pdf", "zip", "gzip", "x-tar", "x-rar", "x-7z",
+                 "msword", "officedocument", "vnd.ms-", "protobuf", "wasm", "font",
+                 "mp4", "mpeg", "quicktime", "x-flv", "x-msdownload")
+_BIN_EXTS = ("zip", "rar", "7z", "gz", "tar", "pdf", "xlsx", "xls", "docx", "doc", "pptx", "ppt",
+             "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "mp3", "mp4",
+             "wav", "avi", "mov", "flv", "apk", "exe", "dmg", "bin", "iso", "jar", "ttf", "woff", "woff2")
+
+
+def _content_type(msg):
+    """Content-Type 主体（去参数、小写）"""
+    try:
+        return (msg.headers.get("content-type") or "").split(";")[0].strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_textual_ct(ct, path):
+    """是否按文本展示：True 文本 / False 二进制 / None 未知（再由能否 UTF-8 解码判断）"""
+    if ct:
+        if ct.startswith("text/") or ct.startswith("image/svg"):
+            return True   # SVG 是文本
+        if any(k in ct for k in _TEXT_CT_HINTS):
+            return True
+        if ct.startswith(("image/", "audio/", "video/")):
+            return False
+        if any(k in ct for k in _BIN_CT_HINTS):
+            return False
+        return None
+    # 无 Content-Type：下载地址常靠后缀表达类型
+    low = (path or "").lower().split("?")[0]
+    ext = low.rsplit(".", 1)[-1] if "." in low else ""
+    if ext in _BIN_EXTS:
+        return False
+    return None
+
+
+def _raw_body_bytes(flow, msg, meta_key, over_key):
+    """body 原始字节（已解压）；None 表示未捕获（大文件流式转发未缓存）"""
+    try:
+        over = bool(flow.metadata.get(over_key))
+        buf = flow.metadata.get(meta_key)
+    except Exception:
+        over, buf = False, None
+    if isinstance(buf, (bytes, bytearray)):
+        return _unzip_raw(bytes(buf), msg)
+    if over:
+        return None
+    try:
+        content = msg.content   # mitmproxy 已按 Content-Encoding 解码
+    except Exception:
+        return None
+    if content is None:
+        return None
+    return bytes(content)
+
+
+def _bin_payload(raw):
+    """二进制载荷：体积 + base64（超限只报体积，前端提示未保存）"""
+    size = len(raw)
+    if size > _BIN_SAVE_MAX:
+        return {"size": size, "b64": None, "over": True}
+    try:
+        return {"size": size, "b64": base64.b64encode(raw).decode("ascii"), "over": False}
+    except Exception:
+        return {"size": size, "b64": None, "over": True}
+
+
+def _text_or_bin(flow, msg, meta_key, over_key, path):
+    """响应体载荷：文本类 → (text, None)；二进制类 → (None, bin_info)
+
+    判定顺序：Content-Type（缺失看后缀）→ 无法判定时尝试 UTF-8 解码；
+    声明为文本却解不出 UTF-8（GBK / 截断 / 实际是二进制）也归为二进制，不渲染乱码。
+    """
+    raw = _raw_body_bytes(flow, msg, meta_key, over_key)
+    if raw is None:
+        # 未捕获完整字节（大文件流式转发未缓存）：二进制类型标成「过大未保存」，
+        # 让详情页给提示而不是显示一行降级文本
+        if _is_textual_ct(_content_type(msg), path) is False:
+            return None, {"size": None, "b64": None, "over": True}
+        return _body_text(flow, msg, meta_key, over_key), None
+    size = len(raw)
+    if size == 0:
+        return "", None
+    textual = _is_textual_ct(_content_type(msg), path)
+    if textual is False:
+        return None, _bin_payload(raw)
+    try:
+        text = raw.decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None, _bin_payload(raw)
+    if textual is None and "\x00" in text:
+        return None, _bin_payload(raw)   # 未知类型但含 NUL 字节：典型二进制
+    if len(text) > MAX_BODY:
+        return text[:MAX_BODY] + "\n…[已截断，完整 %d 字节]" % size, None
+    return text, None
+
+
+def _msg_http_version(msg):
+    """HTTP 版本（HTTP/1.1 / HTTP/2.0）：详情「原始报文」视图的起始行用；取不到返回空串（前端回退展示）"""
+    try:
+        return str(getattr(msg, "http_version", "") or "")
+    except Exception:
+        return ""
+
+
+def _msg_reason(msg):
+    """响应原因短语（200 → OK）：原始报文视图的状态行用；取不到返回空串（前端按状态码映射）"""
+    try:
+        return str(getattr(msg, "reason", "") or "")
+    except Exception:
+        return ""
 
 
 # ── 来源辅助 ─────────────────────────────────────────────────
@@ -783,6 +916,90 @@ def _headers_dict(msg):
         return {}
 
 
+# ── 耗时五阶段拆解（DNS / TCP 连接 / TLS 握手 / TTFB / 内容下载）──────────
+# 数据来自 mitmproxy 上游连接时间戳：它把 DNS 解析并进了
+# timestamp_start → timestamp_tcp_setup 这一段，无法单独取出，因此 DNS 部分由
+# server_connect 钩子并发探测（同一解析器，耗时同源）后从这里拆出来。
+def _is_ip_literal(host):
+    """纯 IP 直连不涉及 DNS 解析"""
+    try:
+        host = str(host or "").strip("[]")
+        if not host or ":" in host:
+            return True
+        parts = host.split(".")
+        return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+    except Exception:
+        return True
+
+
+def _phase_timings(flow, duration_ms, dns_probe=None, reuse=False):
+    """五阶段耗时拆解（毫秒整数，各段之和等于总耗时）
+
+    - DNS：server_connect 并发探测值，且不超过「建连整段」；
+    - TCP：建连整段 - DNS；
+    - TLS：tcp_setup → tls_setup；
+    - 下载：response.timestamp_start → timestamp_end；
+    - TTFB（等待响应）：总耗时减其余各段的残差 —— 占比最贴近「服务端处理慢」的判断口径。
+
+    建连归谁算：
+    - 连接复用（reuse=True）：DNS / TCP / TLS 全记 0，本次请求没花这笔时间；
+    - 建连在本请求到达前就已结束（HTTPS 在 CONNECT 阶段就建好上游连接）→ 不进条形图，
+      实际耗时放进 conn_pre 供前端说明「建连多久、但不算在本次请求里」；
+    - 建连发生在请求窗口内（明文 HTTP 等）→ 正常计入条形图。
+    """
+    total = max(0, int(duration_ms or 0))
+    out = {"dns": 0, "connect": 0, "tls": 0, "ttfb": total, "download": 0,
+           "reused": bool(reuse), "conn_pre": None}
+    if total <= 0:
+        return out   # 错误 / 不足 1ms 的流量：没有可拆解的总量，各段记 0
+    try:
+        req = flow.request
+        conn = flow.server_conn
+        dns = connect = tls = download = 0.0
+        if conn is not None and req is not None:
+            st = getattr(conn, "timestamp_start", None)
+            tcp = getattr(conn, "timestamp_tcp_setup", None)
+            tls_end = getattr(conn, "timestamp_tls_setup", None)
+            req_ts = getattr(req, "timestamp_start", None) or 0
+            if st and tcp and tcp > st:
+                span = (tcp - st) * 1000.0
+                probe = float((dns_probe or {}).get(getattr(conn, "id", ""), 0.0) or 0.0)
+                c_dns = max(0.0, min(probe, span))
+                c_tcp = max(0.0, span - c_dns)
+                c_tls = (tls_end - tcp) * 1000.0 if (tls_end and tls_end > tcp) else 0.0
+                if reuse:
+                    pass
+                elif req_ts and (tls_end or tcp) <= req_ts:
+                    out["conn_pre"] = {
+                        "dns": int(round(c_dns)), "connect": int(round(c_tcp)), "tls": int(round(c_tls)),
+                    }
+                else:
+                    dns, connect, tls = c_dns, c_tcp, c_tls
+        resp = flow.response
+        if resp is not None:
+            r_start = getattr(resp, "timestamp_start", None)
+            r_end = getattr(resp, "timestamp_end", None)
+            if r_start and r_end and r_end > r_start:
+                download = (r_end - r_start) * 1000.0
+        used = dns + connect + tls + download
+        if total > 0 and used > total:  # 时钟抖动 / 流式尾包延迟：等比压到总耗时内
+            k = total / used
+            dns *= k
+            connect *= k
+            tls *= k
+            download *= k
+            used = total
+        out["dns"] = int(round(dns))
+        out["connect"] = int(round(connect))
+        out["tls"] = int(round(tls))
+        out["download"] = int(round(download))
+        rest = total - (out["dns"] + out["connect"] + out["tls"] + out["download"])
+        out["ttfb"] = max(0, rest)
+    except Exception:
+        pass
+    return out
+
+
 class CaptureAddon:
     """mitmproxy 生命周期钩子：改包 Mock / 断点 / 弱网 + 流量记录上报"""
 
@@ -793,6 +1010,8 @@ class CaptureAddon:
         # 「客户端未信任代理证书」「目标不可达」类流量在列表完全不可见（遗漏）。
         self._pending_connects = {}   # server_conn.id -> flow
         self._pending_clients = {}    # client_conn.id -> flow
+        self._dns_probe = {}          # server_conn.id -> DNS 解析耗时（ms），耗时拆解用
+        self._seen_conns = set()      # 已用过的上游连接 id：再次出现即判定「连接复用」
 
     def _build_record(self, flow, error=None, pending=False):
         req = flow.request
@@ -819,8 +1038,11 @@ class CaptureAddon:
                 "client": client_ip, "source": src,
                 "req_headers": _headers_dict(req), "req_body": None,
                 "resp_headers": {}, "resp_body": None,
+                "http_version": _msg_http_version(req),
+                "resp_http_version": None, "resp_reason": None,
                 "error": None, "mock": None, "replay": replay_p, "loss": False,
                 "ws": ws,
+                "timings": None,   # 在途：响应未返回，五阶段拆解等终报
                 "state": "pending",
             }
         mock = None
@@ -858,6 +1080,26 @@ class CaptureAddon:
             loss = bool(flow.metadata.get("cap_loss"))
         except Exception:
             pass
+        ws = _ws_payload(flow)
+        # 连接复用判定：同一上游连接此前已经出现在某条流量里（Keep-Alive / HTTP/2 多路复用）。
+        # 不能只看「建连时间早于本请求」——HTTPS 的连接在 CONNECT 阶段就建好了，首次请求同样更早。
+        reuse = False
+        try:
+            conn = flow.server_conn
+            conn_id = getattr(conn, "id", "") if conn is not None else ""
+            if conn_id:
+                reuse = conn_id in self._seen_conns
+                if not reuse:
+                    if len(self._seen_conns) > 2000:   # 兜底防泄漏
+                        self._seen_conns.clear()
+                    self._seen_conns.add(conn_id)
+        except Exception:
+            reuse = False
+        # 响应体分两路：文本照旧上报；图片 / 文件 / 二进制不解码成乱码，
+        # 原样 base64 上报（resp_binary=True），主服务落盘供详情页预览与下载
+        resp_body, resp_bin = (None, None)
+        if resp is not None:
+            resp_body, resp_bin = _text_or_bin(flow, resp, "cap_down_body", "cap_down_over", req.path)
         return {
             "id": flow.id,
             "time": datetime.fromtimestamp(req.timestamp_start).strftime("%H:%M:%S"),
@@ -876,12 +1118,23 @@ class CaptureAddon:
             "req_headers": _headers_dict(req),
             "req_body": _body_text(flow, req, "cap_up_body", "cap_up_over"),
             "resp_headers": _headers_dict(resp) if resp else {},
-            "resp_body": _body_text(flow, resp, "cap_down_body", "cap_down_over") if resp else None,
+            "resp_body": resp_body,
+            # 二进制响应：是否二进制 / 原始字节数 / 超过保存上限未携带内容 / base64 内容
+            "resp_binary": resp_bin is not None,
+            "resp_body_bytes": (resp_bin or {}).get("size"),
+            "resp_body_over": bool((resp_bin or {}).get("over")),
+            "resp_body_b64": (resp_bin or {}).get("b64"),
+            # 原始报文视图：起始行版本 + 状态原因短语（缺失时前端回退 HTTP/1.1 / 状态码映射）
+            "http_version": _msg_http_version(req),
+            "resp_http_version": _msg_http_version(resp) if resp else None,
+            "resp_reason": _msg_reason(resp) if resp else None,
             "error": error,
             "mock": mock,
             "replay": replay,
             "loss": loss,
-            "ws": _ws_payload(flow),
+            "ws": ws,
+            # 五阶段耗时拆解：WebSocket 的「耗时」是连接存活时长，不做分段
+            "timings": None if ws else _phase_timings(flow, duration_ms, self._dns_probe, reuse),
             "state": "done",
         }
 
@@ -1109,6 +1362,34 @@ class CaptureAddon:
         except Exception:
             pass
         return None, None
+
+    def server_connect(self, data):
+        """上游开始建连：并发探测一次 DNS 解析耗时（不干预连接流程）
+
+        mitmproxy 把 DNS 解析算进 timestamp_start → timestamp_tcp_setup，单独取不出来；
+        这里在它发起连接的同时用同一解析器再查一次，耗时与真实解析同源，用于把这段
+        再拆成「DNS 解析 + TCP 连接」。纯 IP 直连不探（记 0），探测失败同样记 0。
+        """
+        try:
+            srv = data.server
+            host = (srv.address or ("", 0))[0]
+            if not host or _is_ip_literal(host):
+                return
+            self._dns_probe.pop(srv.id, None)
+            asyncio.get_running_loop().create_task(self._probe_dns(srv.id, host))
+        except Exception:
+            pass
+
+    async def _probe_dns(self, sid, host):
+        """（协程）单次解析耗时 → 该连接的记录里作为 DNS 阶段耗时"""
+        t0 = time.perf_counter()
+        try:
+            await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except Exception:
+            return
+        if len(self._dns_probe) > 500:   # 兜底防泄漏（连接量大时清空旧值）
+            self._dns_probe.clear()
+        self._dns_probe[sid] = (time.perf_counter() - t0) * 1000.0
 
     def server_connected(self, data):
         """上游连接建立成功：移除缓存（此后不会再触发 server_connect_error）。

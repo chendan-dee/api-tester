@@ -249,6 +249,94 @@ def _referenced_var_names(obj):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 内置动态变量：${__random_mobile} / ${__random_uuid} / ${__timestamp}
+# ═══════════════════════════════════════════════════════════════
+
+def _gen_mobile():
+    """随机大陆手机号：1 开头、第二位 3-9，共 11 位"""
+    return "1" + random.choice("3456789") + "".join(random.choice("0123456789") for _ in range(9))
+
+
+# 键就是数据集 / 请求配置里写的占位符名（JMeter 风格双下划线前缀，不会和业务变量撞名）
+DYNAMIC_VARS = {
+    "__random_mobile": _gen_mobile,
+    "__random_uuid": lambda: str(uuid.uuid4()),
+    "__timestamp": lambda: int(time.time()),            # 秒级；整串替换时保持数字类型
+    "__timestamp_ms": lambda: int(time.time() * 1000),  # 毫秒级
+}
+
+_DYN_REF_RE = re.compile(r'\$\{(__[A-Za-z0-9_]+)\}')
+
+
+def _walk_strings(obj, out):
+    """把 obj 里的所有字符串收进 out（dict/list 递归，供动态变量扫描用）"""
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _walk_strings(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_strings(v, out)
+
+
+def _expand_dyn_value(obj, values):
+    """把变量值里写死的 ${__random_mobile} 换成本次生成的值
+
+    数据集合 / 变量管理的格子里可以直接填占位符（例：手机号列写 ${__random_mobile}），
+    运行到这行时整串替换成真实值，外层 ${mobile} 引用才拿得到东西。
+    """
+    if isinstance(obj, str):
+        m = _DYN_REF_RE.fullmatch(obj)
+        if m:
+            return values.get(m.group(1), obj)          # 整串引用：保留原始类型（时间戳是数字）
+        if '${' not in obj:
+            return obj
+        return _DYN_REF_RE.sub(lambda mm: str(values[mm.group(1)]) if mm.group(1) in values else mm.group(0), obj)
+    if isinstance(obj, dict):
+        return {k: _expand_dyn_value(v, values) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_dyn_value(v, values) for v in obj]
+    return obj
+
+
+def _apply_dynamic_vars(req_cfg, variables):
+    """前置钩子：本次请求引用到的 ${__random_*} / ${__timestamp} 现生成真实值。
+
+    扫描范围是请求配置（url / headers / params / body）和变量值本身：数据集合
+    里常见的写法是某列直接填 ${__random_mobile}，再在请求里用 ${mobile} 引用。
+    生成后原地写回 variables —— 同一请求内多处引用取同一个值（注册时手机号要
+    前后一致），调用方拿到的入参快照也因此是真实值，不会剩下占位符；每次请求
+    重新生成。返回本次生成的 {变量名: 值}，供结果展示。
+    """
+    if not isinstance(variables, dict):
+        return {}
+    texts = []
+    _walk_strings(req_cfg, texts)
+    _walk_strings(variables, texts)
+    names = set()
+    for t in texts:
+        names.update(_DYN_REF_RE.findall(_decode_ref_urlenc(t)))
+    used = {}
+    for name in sorted(names):
+        gen = DYNAMIC_VARS.get(name)
+        if gen is None:      # ${__something} 不是内置变量：原样留着，交由用户自己的变量表处理
+            continue
+        used[name] = gen()
+    if not used:
+        return {}
+    variables.update(used)
+    # 变量值里直接写的占位符就地展开，外层 ${字段名} 才能拿到真实值
+    for key, val in list(variables.items()):
+        if key in used:
+            continue
+        new_val = _expand_dyn_value(val, used)
+        if new_val is not val:
+            variables[key] = new_val
+    return used
+
+
+# ═══════════════════════════════════════════════════════════════
 # JSON 路径取值
 # ═══════════════════════════════════════════════════════════════
 
@@ -505,6 +593,48 @@ def _fix_resp_headers(resp):
     return headers, fixed
 
 
+_MOJI_RUN = re.compile(r"[^\x00-\x7F]+")
+
+
+def _demojibake_value(text):
+    """还原「UTF-8 字节被按 latin-1 解读」的乱码（mojibake）。
+
+    典型来源：服务端把收到的中文请求头用 latin-1 解读后回显进 body
+    （httpbin 的 headers 回显就是这样），"潘娜" 在正文里变成 "æ½˜å¨œ"。
+    请求侧为了让中文头能发出去已做 latin-1 表面化，回显环节的错误只能
+    在展示前按字节回环修掉。
+
+    只处理「latin-1 编码 → UTF-8 解码」能走通的片段，且还原后必须含
+    中日韩字符：真正的西欧文本（déjà vu）解码后不含 CJK，原样保留。
+    """
+    if not text:
+        return text
+
+    def fix(run):
+        try:
+            fixed = run.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return run
+        if fixed == run:
+            return run
+        has_cjk = any(0x2E80 <= ord(c) <= 0x9FFF or 0xF900 <= ord(c) <= 0xFAFF
+                      for c in fixed)
+        return fixed if has_cjk else run
+
+    return _MOJI_RUN.sub(lambda m: fix(m.group(0)), text)
+
+
+def _demojibake(obj):
+    """递归修正 JSON 结构里的 mojibake 字符串。"""
+    if isinstance(obj, str):
+        return _demojibake_value(obj)
+    if isinstance(obj, list):
+        return [_demojibake(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _demojibake(v) for k, v in obj.items()}
+    return obj
+
+
 def _is_binary_ct(ct_header):
     """Content-Type 是否属于二进制类型（图片/音视频/文档/压缩包等）。
 
@@ -562,6 +692,11 @@ def do_request(req_cfg, variables=None, mock=None):
         except Exception:
             seq_used = {}
 
+    # ── 内置动态变量：随机手机号 / UUID / 时间戳，发请求前现生成 ──
+    # 写在 variables 里而不是只替换请求配置：调用方的入参快照也走 _replace_deep，
+    # 这样报告里看到的是真实值，而不是 ${__random_mobile} 这种占位符
+    dyn_used = _apply_dynamic_vars(req_cfg, variables)
+
     # ── mock 模式：直接返回模拟数据，不发真实请求 ──
     if mock:
         # 先替换变量，支持 ${var} 引用之前提取的值
@@ -575,7 +710,7 @@ def do_request(req_cfg, variables=None, mock=None):
         return dict(ok=True, status_code=status_code,
                     elapsed_ms=delay_ms, resp_text=resp_text,
                     resp_json=resp_json, resp_headers={},
-                    error=None, is_mock=True, seq_used=seq_used,
+                    error=None, is_mock=True, seq_used=seq_used, dyn_used=dyn_used,
                     latin1_headers=[], resp_latin1_headers=[],
                     binary_resp=False, resp_ct="")
 
@@ -711,10 +846,15 @@ def do_request(req_cfg, variables=None, mock=None):
         resp_hdrs, resp_latin1_headers = _fix_resp_headers(resp)
         is_binary = _is_binary_ct(resp.headers.get("Content-Type") or "")
         resp_text = "" if (is_binary and "octet-stream" not in _ct_header) else resp.text
+        # 服务端把 UTF-8 字节当 latin-1 回显（中文头被回显进 body 的 headers 里）
+        # 时，正文和解析后的 JSON 会一起变成 "æ½˜å¨œ"：展示前统一次回环还原，
+        # 参考响应、提取结果、断言看到的是同一份正确文本
+        resp_text = _demojibake_value(resp_text)
+        resp_json = _demojibake(resp_json)
         return dict(ok=True, status_code=resp.status_code,
                     elapsed_ms=elapsed_ms, resp_text=resp_text,
                     resp_json=resp_json, resp_headers=resp_hdrs,
-                    error=None, is_mock=False, seq_used=seq_used,
+                    error=None, is_mock=False, seq_used=seq_used, dyn_used=dyn_used,
                     latin1_headers=latin1_headers,
                     resp_latin1_headers=resp_latin1_headers,
                     binary_resp=is_binary,
@@ -723,16 +863,137 @@ def do_request(req_cfg, variables=None, mock=None):
         return dict(ok=False, status_code=None,
                     elapsed_ms=int((time.time() - t0) * 1000),
                     resp_text="", resp_json=None, resp_headers={},
-                    error="请求超时", is_mock=False, seq_used=seq_used,
+                    error="请求超时", is_mock=False, seq_used=seq_used, dyn_used=dyn_used,
                     latin1_headers=latin1_headers, resp_latin1_headers=[],
                     binary_resp=False, resp_ct="")
     except Exception as e:
         return dict(ok=False, status_code=None,
                     elapsed_ms=int((time.time() - t0) * 1000),
                     resp_text="", resp_json=None, resp_headers={},
-                    error=str(e), is_mock=False, seq_used=seq_used,
+                    error=str(e), is_mock=False, seq_used=seq_used, dyn_used=dyn_used,
                     latin1_headers=latin1_headers, resp_latin1_headers=[],
                     binary_resp=False, resp_ct="")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 发送前预览（Resolved Request）：拼出「真会发出去」的那份请求，但不发
+# ═══════════════════════════════════════════════════════════════
+
+def preview_request(req_cfg, variables=None):
+    """把这次真正要发出去的请求提前拼出来（发送前的最终数据预览）
+
+    与 do_request 用同一套规则，避免「预览看到的」和「实际发出的」不是一份东西：
+      1. ${var} 递归替换（整串引用保留原始类型，内嵌引用按 JSON 标准序列化）；
+      2. params 按 requests 的规则拼进查询串；
+      3. body 按 Content-Type 决定怎么发：含 form 的按表单编码、dict/list 序列化成
+         UTF-8 原文 JSON（不转义中文）、字符串原样送；没有 Content-Type 时按与
+         do_request 相同的规则补一个（JSON 体补 application/json，字符串体按首字符猜）；
+      4. 补 charset、剔除 Content-Length（交给请求库按实际 body 重算）。
+    唯一的不同：不发请求，也不给自增变量取号 —— 只看号，看一眼预览不会白耗序号。
+
+    返回 dict：
+      ok / method / url（含拼好的查询串）/ headers（[{k, v}]）
+      body（最终报文文本）/ body_kind（json|form|raw|none）/ body_bytes
+      unresolved（没替换掉的 ${var} 名，按出现顺序）/ seq（本次会用到的自增号）
+      latin1_headers（含中文、按 UTF-8 字节发送的头名）
+    """
+    from urllib.parse import urlencode
+    variables = dict(variables or {})
+
+    # 动态变量：预览也现生成一份（只作用于副本，不发请求、不影响正式执行的取值）
+    dyn_peek = _apply_dynamic_vars(req_cfg, variables)
+
+    # 自增变量：只 peek 不 assign，结果注入变量表让预览显示「这次会发 XX007」
+    seq_peek = {}
+    if _seqvars is not None:
+        try:
+            seq_peek = _seqvars.peek(variables, only=_referenced_var_names(req_cfg))
+            variables.update(seq_peek)
+        except Exception:
+            seq_peek = {}
+
+    cfg     = _replace_deep(req_cfg or {}, variables)
+    url     = str(cfg.get("url") or "")
+    method  = str(cfg.get("method") or "GET").upper()
+    headers = {str(k): v for k, v in (cfg.get("headers") or {}).items()}
+    body    = cfg.get("body")
+
+    # params：requests 会拼到查询串上，这里照同样规则拼好再展示（含 doseq）
+    params = cfg.get("params")
+    if params:
+        try:
+            qs = urlencode(params, doseq=True)
+            if qs:
+                url += ("&" if "?" in url else "?") + qs
+        except Exception:
+            pass
+
+    # Content-Type 大小写不敏感查找
+    ct = ""
+    for hk, hv in headers.items():
+        if str(hk).lower() == "content-type":
+            ct = str(hv).lower()
+            break
+
+    def _with_charset():
+        """给表单 / JSON 体补 charset 声明（与 do_request 一致，中文不乱码）"""
+        if "charset" in ct:
+            return
+        for hk in list(headers.keys()):
+            if str(hk).lower() == "content-type":
+                headers[hk] = str(headers[hk]) + "; charset=utf-8"
+                return
+
+    kind, text = "none", ""
+    auto_ct = False
+    if body is not None and body != "":
+        if "form" in ct:
+            kind = "form"
+            if isinstance(body, str):
+                text = body
+                _with_charset()
+            else:
+                try:
+                    text = urlencode(body, doseq=True)
+                except Exception:
+                    text = str(body)
+        elif isinstance(body, (dict, list)):
+            kind = "json"
+            text = json.dumps(body, ensure_ascii=False, default=str)
+            if not ct:
+                headers["content-type"] = "application/json"
+                ct = "application/json"
+                auto_ct = True
+            if ct.startswith("application/json"):
+                _with_charset()
+        else:
+            kind = "raw"
+            text = str(body)
+            if not ct:
+                guess = text.lstrip()[:1]
+                headers["content-type"] = ("application/json" if guess in ("{", "[")
+                                           else "application/x-www-form-urlencoded")
+                ct = headers["content-type"].lower()
+                auto_ct = True
+            if "form" in ct:
+                _with_charset()
+
+    # 中文头：与实际发送一致，回传头名供前端提示「按 UTF-8 字节发送」
+    latin1_headers = _latin1_safe_headers(dict(headers))
+    # Content-Length 由请求库按真实 body 重算，界面不显示旧值
+    for hk in list(headers.keys()):
+        if str(hk).lower() == "content-length":
+            headers.pop(hk)
+
+    return dict(
+        ok=True, method=method, url=url,
+        headers=[{"k": k, "v": v} for k, v in headers.items()],
+        body=text, body_kind=kind,
+        body_bytes=len(text.encode("utf-8")) if text else 0,
+        auto_ct=auto_ct,
+        unresolved=find_unresolved_refs({"url": url, "headers": headers, "body": text}),
+        seq=seq_peek, dyn=dyn_peek, latin1_headers=latin1_headers,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════

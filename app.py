@@ -1194,33 +1194,19 @@ def _script_log_lines(pre_info, post_info):
 #  API: 发送单步请求（Postman 式即发即看，无需先保存）
 # ═══════════════════════════════════════════════════
 
-@app.route("/api/send", methods=["POST"])
-def api_send():
-    """把表单序列化的 step 直接发出去并返回响应详情
+def _resolve_step_variables(step, filename):
+    """按「真正发送」的顺序把变量表铺好：数据集合首行 → 变量管理（环境 > 全局）
+    → 文档级 setup → 步骤级 setup
 
-    请求参数:
-      file — 文件名（可选；用于加载文档级 setup 与步骤级 setup）
-      step — 完整 step 字典（request/assert/extract/extract_list/mock）
+    单发（/api/send）与发送前预览（/api/preview）共用这一套顺序，
+    否则预览出来的值会和实际发出去的对不上，预览就成了误导。
 
-    返回:
-      ok / status_code / elapsed_ms / resp_headers / resp_body / resp_json
-      is_mock / seq_used / ds_used / asserts / assert_passed / extracted / error
-
-    ds_used：本次单发用了哪行数据集合（{name, label, values}；没引用时为 None）
+    返回 (variables, ds_used, setup_errors)
     """
-    payload = request.get_json(silent=True) or {}
-    step = payload.get("step")
-    if not isinstance(step, dict):
-        return jsonify({"ok": False, "error": "step 必须是 JSON 字典"}), 400
-    req_cfg = step.get("request")
-    if not isinstance(req_cfg, dict) or not req_cfg.get("url"):
-        return jsonify({"ok": False, "error": "请填写请求 URL"}), 400
-
     import engine as E
 
     # 文档级 setup（文件存在时加载，不存在则跳过，不影响即发即看）
     setup_cfg = {}
-    filename = payload.get("file", "")
     if filename:
         filepath = _safe_filepath(filename)
         if filepath and os.path.exists(filepath):
@@ -1245,12 +1231,43 @@ def api_send():
         variables.update(ds_row.get("values") or {})
 
     variables.update(_load_variables_values())
+    setup_errors = []
     if setup_cfg:
-        setup_vars, _ = E.eval_setup(setup_cfg)
+        setup_vars, errs = E.eval_setup(setup_cfg)
         variables.update(setup_vars)
+        setup_errors.extend(errs or [])
     if isinstance(step.get("setup"), dict):
-        step_setup_vars, _ = E.eval_setup(step["setup"])
+        step_setup_vars, errs = E.eval_setup(step["setup"])
         variables.update(step_setup_vars)
+        setup_errors.extend(errs or [])
+    return variables, ds_used, setup_errors
+
+
+@app.route("/api/send", methods=["POST"])
+def api_send():
+    """把表单序列化的 step 直接发出去并返回响应详情
+
+    请求参数:
+      file — 文件名（可选；用于加载文档级 setup 与步骤级 setup）
+      step — 完整 step 字典（request/assert/extract/extract_list/mock）
+
+    返回:
+      ok / status_code / elapsed_ms / resp_headers / resp_body / resp_json
+      is_mock / seq_used / ds_used / asserts / assert_passed / extracted / error
+
+    ds_used：本次单发用了哪行数据集合（{name, label, values}；没引用时为 None）
+    """
+    payload = request.get_json(silent=True) or {}
+    step = payload.get("step")
+    if not isinstance(step, dict):
+        return jsonify({"ok": False, "error": "step 必须是 JSON 字典"}), 400
+    req_cfg = step.get("request")
+    if not isinstance(req_cfg, dict) or not req_cfg.get("url"):
+        return jsonify({"ok": False, "error": "请填写请求 URL"}), 400
+
+    import engine as E
+
+    variables, ds_used, _ = _resolve_step_variables(step, payload.get("file", ""))
 
     mock_cfg = step.get("mock")
     assert_cfg = step.get("assert") or {}
@@ -1295,6 +1312,7 @@ def api_send():
         "resp_json": result["resp_json"],
         "is_mock": result.get("is_mock", False),
         "seq_used": result.get("seq_used") or {},
+        "dyn_used": result.get("dyn_used") or {},
         "latin1_headers": result.get("latin1_headers") or [],
         "resp_latin1_headers": result.get("resp_latin1_headers") or [],
         "binary_resp": result.get("binary_resp", False),
@@ -1306,6 +1324,56 @@ def api_send():
         "extract_detail": extract_detail,
         "script": {"pre": pre_info, "post": post_info},
     })
+
+
+# ═══════════════════════════════════════════════════
+#  API: 发送前预览（Resolved Request，不真实发送）
+# ═══════════════════════════════════════════════════
+
+@app.route("/api/preview", methods=["POST"])
+def api_preview():
+    """把 step 解析成「真会发出去」的那份请求并返回，但不发出去
+
+    请求参数与 /api/send 相同（file / step），取值顺序也相同：
+    数据集合首行 → 变量管理（环境 > 全局） → 文档/步骤 setup → 前置脚本 → 自增取号（只看号）。
+
+    返回:
+      ok / method / url / headers / body / body_kind / body_bytes
+      unresolved   — 当前上下文没取到值的变量名，前端标红「[未找到变量: xxx]」
+      seq          — 本次发送会取到的自增号（预览不消耗序号）
+      ds_used      — 本次用到的数据集合行
+      script       — 前置脚本执行结果（改过 URL / 方法时前端提示）
+      mock/foreach — 命中了模拟响应 / 配了数据驱动循环（单发不会展开）
+      error        — 前置脚本出错时直接说明，不会带着错脚本去发
+    """
+    payload = request.get_json(silent=True) or {}
+    step = payload.get("step")
+    if not isinstance(step, dict):
+        return jsonify({"ok": False, "error": "step 必须是 JSON 字典"}), 400
+    req_cfg = step.get("request")
+    if not isinstance(req_cfg, dict) or not str(req_cfg.get("url") or "").strip():
+        return jsonify({"ok": False, "error": "请填写请求 URL"}), 400
+
+    import engine as E
+
+    variables, ds_used, setup_errors = _resolve_step_variables(step, payload.get("file", ""))
+
+    # 前置脚本：放在与 /api/send 完全相同的位置（能改 URL / 方法 / 头 / Body，也能写变量）
+    req_cfg, pre_info = _exec_step_script(step, "pre", variables, req_cfg=req_cfg)
+    if pre_info and pre_info.get("error"):
+        return jsonify({"ok": False, "error": "前置脚本出错：" + pre_info["error"],
+                        "script": {"pre": pre_info, "post": None}})
+
+    res = E.preview_request(req_cfg, variables)
+    res.update({
+        "ok": True,
+        "ds_used": ds_used,
+        "setup_errors": setup_errors,
+        "script": {"pre": pre_info, "post": None},
+        "mock": bool(step.get("mock")),
+        "foreach": bool(step.get("foreach")),
+    })
+    return jsonify(res)
 
 
 # ═══════════════════════════════════════════════════
@@ -1462,6 +1530,7 @@ def run_test():
                         "extract_detail": extract_detail,
                         "is_mock": result.get("is_mock", False),
                         "seq_used": result.get("seq_used") or {},
+                        "dyn_used": result.get("dyn_used") or {},
                         "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
                     }
 
@@ -1591,6 +1660,7 @@ def run_test_stream():
                     "extract_detail": extract_detail,
                     "is_mock": result.get("is_mock", False),
                     "seq_used": result.get("seq_used") or {},
+                    "dyn_used": result.get("dyn_used") or {},
                     "latin1_headers": result.get("latin1_headers") or [],
                     "resp_headers": result.get("resp_headers") or {},
                     "resp_latin1_headers": result.get("resp_latin1_headers") or [],
@@ -1651,8 +1721,9 @@ def run_test_stream():
         step_extracted_keys = set()  # 记录哪些变量是从中间步骤提取的
         fe_fixed_steps = set()  # 已修正过总请求数的 foreach 步骤
         # 行在外层、循环次数在内层：每行都从头跑完整串
-        _plan_rows = [(ln, lb, rv)
-                      for lb, rv in (ds_rows or [(None, None)])
+        # 每行带自己的标记 expected_type（normal / error），随记录下发，报告据此判断拦截 / 漏测
+        _plan_rows = [(ln, lb, rv, et)
+                      for lb, rv, et in (ds_rows or [(None, None, None)])
                       for ln in range(1, loops + 1)]
         _last_row = object()
 
@@ -1665,7 +1736,7 @@ def run_test_stream():
             }
             yield f"data: {json.dumps(setup_record, ensure_ascii=False)}\n\n"
 
-        for loop_num, _row_label, _row_vars in _plan_rows:
+        for loop_num, _row_label, _row_vars, _row_etype in _plan_rows:
             if _row_vars is not None and _row_label != _last_row:
                 # 换行：先铺本行数据（优先级最低），再叠变量基线；之后步骤提取的值再覆盖
                 # 取值优先级：当前接口提取 > 变量管理（环境/全局） > 数据集合
@@ -1803,6 +1874,7 @@ def run_test_stream():
                                 "extract_detail": extract_detail,
                                 "is_mock": result.get("is_mock", False),
                                 "seq_used": result.get("seq_used") or {},
+                                "dyn_used": result.get("dyn_used") or {},
                                 "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
                                 "latin1_headers": result.get("latin1_headers") or [],
                                 "resp_headers": result.get("resp_headers") or {},
@@ -1825,6 +1897,8 @@ def run_test_stream():
 
                     record["seq"] = seq
                     record["total"] = total_requests
+                    # 正向 / 反向用例标记：没走数据集合时一律 normal
+                    record["expected_type"] = _row_etype or "normal"
                     if loops > 1:
                         record["loop"] = loop_num
                     if _row_label is not None:
@@ -3979,6 +4053,7 @@ def batch_run_stream():
                                 "extracted": [],
                                 "is_mock": result.get("is_mock", False),
                                 "seq_used": result.get("seq_used") or {},
+                                "dyn_used": result.get("dyn_used") or {},
                                 "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
                             }
                 except Exception as ex:
@@ -4230,6 +4305,7 @@ def batch_run_chain_stream():
                                     "extract_detail": extract_detail,
                                     "is_mock": result.get("is_mock", False),
                                     "seq_used": result.get("seq_used") or {},
+                                    "dyn_used": result.get("dyn_used") or {},
                                     "req_body": _req_body, "req_params": _req_params, "req_headers": _req_headers,
                                 }
                     except Exception as ex:
@@ -4391,6 +4467,99 @@ def _load_environments():
         "active": str(raw.get("active") or ""),
         "envs": [e for e in envs if isinstance(e, dict) and e.get("id")],
     }
+
+
+@app.route("/api/batch/export-xlsx", methods=["POST"])
+def api_batch_export_xlsx():
+    """批量运行的提取数据导出 Excel：所有字段放在同一张工作表。
+
+    和面板卡片同形态：每个字段占「轮次 + 值」两列，行 = 各自第 k 个命中，
+    没命中的轮次不占行（按 1..N 补齐会满屏空格子），行数由命中最多的一列决定。
+    """
+    import io
+
+    from flask import send_file
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    data = request.get_json(silent=True) or {}
+    fields = data.get("fields") or []
+    if not fields:
+        return jsonify({"ok": False, "error": "没有提取字段，没有可导出的数据"}), 400
+    fname = (str(data.get("filename") or "").strip() or "提取数据") + ".xlsx"
+
+    hdr_font = Font(bold=True, color="1F3C88")
+    hdr_fill = PatternFill("solid", fgColor="E8F0FE")
+    note_font = Font(color="8A94A6", size=9)
+    wrap = Alignment(vertical="top")
+    center = Alignment(horizontal="center")
+
+    def put(ws, row_idx, col_idx, val):
+        cell = ws.cell(row=row_idx, column=col_idx)
+        cell.value = "" if val is None else val
+        # 以 = 开头的值当文本：否则 Excel 会把它当公式算，导出即失真
+        if isinstance(val, str) and val.startswith("="):
+            cell.data_type = "s"
+        cell.alignment = wrap
+        return cell
+
+    def auto_width(ws, max_w=60):
+        for col in ws.columns:
+            best = 0
+            for c in col:
+                if c.row == 2:   # 来源说明行是长文本，不参与列宽，免得每列被撑到上限
+                    continue
+                v = "" if c.value is None else str(c.value)
+                best = max(best, sum(2 if ord(ch) > 0x2E7F else 1 for ch in v))
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(best + 2, 8), max_w)
+
+    wb = Workbook()
+    s = wb.active
+    s.title = "提取数据"
+
+    groups = []
+    for f in fields:
+        vals = [it for it in (f.get("values") or []) if isinstance(it, dict)]
+        groups.append((f, vals))
+
+    # 第 1 行表头每组「轮次 + 字段名」，第 2 行灰字注明来源（接口 + JSONPath）
+    for gi, (f, vals) in enumerate(groups):
+        col = gi * 2 + 1
+        c = put(s, 1, col, "轮次")
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = center
+        c = put(s, 1, col + 1, f.get("label") or ("字段%d" % (gi + 1)))
+        c.font = hdr_font
+        c.fill = hdr_fill
+        note = "取自 " + (f.get("api") or "全部接口")
+        if f.get("path"):
+            note += " · " + str(f["path"])
+        if not vals:
+            note += " · 未取到值"
+        put(s, 2, col + 1, note).font = note_font
+
+    # 数据行：第 k 行放各列第 k 个命中，短列尾部自然留空
+    for gi, (f, vals) in enumerate(groups):
+        base = gi * 2 + 1
+        for k, item in enumerate(vals, 1):
+            try:
+                no = int(item.get("no") or 0)
+            except (TypeError, ValueError):
+                no = 0
+            if no:
+                put(s, 2 + k, base, no).alignment = center
+            put(s, 2 + k, base + 1, str(item.get("v", "")))
+    s.freeze_panes = "A3"
+    auto_width(s)
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return send_file(
+        bio, as_attachment=True, download_name=fname,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 def _save_environments(data):
@@ -4673,9 +4842,13 @@ def dataset_save():
     name = str(body.get("name") or "").strip()
     headers = body.get("headers") or []
     rows = body.get("rows") or []
+    # 行标记：normal（正向）/ error（故意传错的异常入参），跟 rows 一一对应
+    row_types = body.get("row_types")
+    if not isinstance(row_types, list):
+        row_types = None
     source = str(body.get("source") or "").strip() or None
     try:
-        data = DS.save(name, headers, rows, source=source)
+        data = DS.save(name, headers, rows, source=source, row_types=row_types)
         return jsonify({"ok": True, "dataset": data})
     except ValueError as ex:
         return jsonify({"ok": False, "error": str(ex)}), 400
@@ -4925,7 +5098,7 @@ def _load_quick_notes():
 
 
 def _save_quick_notes(notes):
-    """保存随心记：只收 {id, text, created_at}，去空文本、保留前端顺序、上限 200 条"""
+    """保存随心记：只收 {id, text, created_at, done}，去空文本、保留前端顺序、上限 200 条"""
     import uuid
     from datetime import datetime as _dt
     now = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -4940,7 +5113,12 @@ def _save_quick_notes(notes):
         if nid in seen:
             continue
         seen.add(nid)
-        clean.append({"id": nid, "text": text, "created_at": str(n.get("created_at") or now)})
+        clean.append({
+            "id": nid,
+            "text": text,
+            "created_at": str(n.get("created_at") or now),
+            "done": bool(n.get("done")),
+        })
         if len(clean) >= 200:
             break
     with _file_lock(QUICK_NOTES_FILE):
@@ -5145,6 +5323,7 @@ def mock_proxy(subpath):
     resp_delay_ms = 0  # 响应级别的延时配置
     active = {}  # 当前激活的响应对象
     status_message = ""  # 自定义状态消息
+    resp_passthrough = False  # 仅延时：不返回 Mock，透传真实响应
 
     if matched:
         responses = matched.get("responses")
@@ -5158,6 +5337,7 @@ def mock_proxy(subpath):
             resp_headers = active.get("headers") or {}
             resp_body = active.get("body", "")
             status_message = active.get("status_message", "")  # 自定义状态消息
+            resp_passthrough = _mock_passthrough(active, matched)
         else:
             # 兼容旧格式：直接取顶层字段
             resp_status = matched.get("status", 200)
@@ -5165,28 +5345,81 @@ def mock_proxy(subpath):
             resp_headers = matched.get("headers") or {}
             resp_body = matched.get("body", "")
             status_message = matched.get("status_message", "")
+            resp_passthrough = bool(matched.get("passthrough"))
+
+    if not matched:
+        _save_proxy_log({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "method": method,
+            "path": path,
+            "matched": False,
+            "mapping_path": None,
+            "mapping_id": None,
+            "response_name": None,
+            "status": 404,
+            "status_message": "",
+            "response_headers": {},
+            "response_body": None,
+        })
+        return jsonify({"error": "No mock mapping found for " + method + " " + path}), 404
+
+    # 仅延时模式：命中规则但不返回 Mock 数据——请求照常发给真实服务器，只把响应拖慢
+    if resp_passthrough:
+        delay_ms = resp_delay_ms if resp_delay_ms > 0 else config.get("delay_ms", 0)
+        target_url = _mock_real_target_url(path, request.query_string.decode("utf-8", "ignore"))
+        if not target_url:
+            return jsonify({
+                "error": "仅延时模式需要「远程映射」为该路径指定真实目标（remote_host），当前路径: " + path
+            }), 502
+        try:
+            fwd_headers = {k: v for k, v in request.headers
+                           if k.lower() not in ("host", "proxy-connection", "content-length")}
+            real = _mock_forward_real(target_url, method, fwd_headers, request.get_data() or None)
+        except Exception as e:
+            return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
+        print(f"[Mock Proxy] 仅延时透传: {target_url} (+{delay_ms}ms)")
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+        real_text = real.content.decode("utf-8", errors="ignore")
+        _save_proxy_log({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "method": method,
+            "path": path,
+            "matched": True,
+            "mapping_path": matched.get("path"),
+            "mapping_id": matched_id,
+            "response_name": resp_name,
+            "status": real.status_code,
+            "status_message": status_message,
+            "response_headers": dict(real.headers),
+            "response_body": real_text[:20000],
+            "passthrough": True,
+            "delay_ms": delay_ms,
+        })
+        resp = make_response(real.content, real.status_code)
+        for k, v in real.headers.items():
+            if k.lower() not in ("transfer-encoding", "connection", "content-encoding"):
+                resp.headers[k] = v
+        resp.headers["X-Mock-Source"] = "real-server-delayed"
+        return resp
 
     # 记录日志（存完整响应体）
     log_body_str = resp_body
     if isinstance(log_body_str, (dict, list)):
         log_body_str = json.dumps(log_body_str, ensure_ascii=False)
-    log_entry = {
+    _save_proxy_log({
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "method": method,
         "path": path,
-        "matched": matched is not None,
-        "mapping_path": matched.get("path") if matched else None,
+        "matched": True,
+        "mapping_path": matched.get("path"),
         "mapping_id": matched_id,
         "response_name": resp_name,
-        "status": resp_status if matched else 404,
-        "status_message": status_message if matched else "",
-        "response_headers": resp_headers if matched else {},
-        "response_body": log_body_str if matched else None,
-    }
-    _save_proxy_log(log_entry)
-
-    if not matched:
-        return jsonify({"error": "No mock mapping found for " + method + " " + path}), 404
+        "status": resp_status,
+        "status_message": status_message,
+        "response_headers": resp_headers,
+        "response_body": log_body_str,
+    })
 
     # 应用延时配置（优先使用响应级别的延时，否则使用全局延时）
     delay_ms = resp_delay_ms if resp_delay_ms > 0 else config.get("delay_ms", 0)
@@ -5209,6 +5442,63 @@ def mock_proxy(subpath):
     elif "Content-Type" not in resp.headers and "content-type" not in resp.headers:
         resp.headers["Content-Type"] = "application/json; charset=utf-8"
     return resp
+
+
+def _mock_passthrough(active_obj, mapping_obj=None):
+    """响应报文是否开启「仅延时」：不返回 Mock 数据，真实请求照常发到服务器，只把响应拖慢"""
+    if isinstance(active_obj, dict) and active_obj.get("passthrough"):
+        return True
+    return bool(mapping_obj and mapping_obj.get("passthrough"))
+
+
+def _mock_forward_real(url, method, headers, data, timeout=10):
+    """转发到真实服务器（仅延时模式用），返回 requests 响应对象"""
+    return req_lib.request(
+        method=method,
+        url=url,
+        headers=headers,
+        data=data,
+        timeout=timeout,
+        allow_redirects=True,
+        verify=False,
+    )
+
+
+def _mock_real_target_url(local_path, query=""):
+    """按「远程映射」反推 /proxy/ 本地路径对应的真实地址（仅延时模式用）
+
+    远程映射把 remote_host(+remote_path) 映射到 local_path，反推时优先用 remote_path，
+    其次用 remote_host 里自带的路径（如 https://host/api/sso/login），否则沿用本地路径。
+    找不到启用的映射时返回 None，由调用方提示用户补配远程映射。
+    """
+    from urllib.parse import urlparse
+    for rm in _load_remote_proxy().get("mappings", []):
+        if not rm.get("enabled", True):
+            continue
+        mapped_path = rm.get("local_path") or ""
+        if not mapped_path:
+            continue
+        if mapped_path not in (local_path, "/proxy" + local_path):
+            continue
+        remote_host = (rm.get("remote_host") or "").strip()
+        if not remote_host:
+            continue
+        if not remote_host.startswith(("http://", "https://")):
+            remote_host = "http://" + remote_host
+        parsed = urlparse(remote_host)
+        if not parsed.netloc:
+            continue
+        remote_path = rm.get("remote_path") or ""
+        host_path = parsed.path if parsed.path not in ("", "/") else ""
+        if remote_path:
+            suffix = host_path.rstrip("/") + remote_path
+        else:
+            suffix = host_path or local_path
+        url = f"{parsed.scheme or 'http'}://{parsed.netloc}{suffix}"
+        if query:
+            url += ("&" if "?" in url else "?") + query
+        return url
+    return None
 
 
 @app.route("/api/mock-proxy/switch-response", methods=["POST"])
@@ -5672,6 +5962,7 @@ def remote_proxy(subpath):
             resp_delay_ms = 0
             status_message = ""
             resp_name = ""
+            resp_passthrough = False
             if responses and isinstance(responses, list) and len(responses) > 0:
                 idx = min(active_idx, len(responses) - 1)
                 active = responses[idx]
@@ -5681,12 +5972,49 @@ def remote_proxy(subpath):
                 resp_headers = active.get("headers") or {}
                 resp_body = active.get("body", "")
                 status_message = active.get("status_message", "")
+                resp_passthrough = _mock_passthrough(active, matched_mock)
             else:
                 resp_status = matched_mock.get("status", 200)
                 resp_delay_ms = matched_mock.get("delay_ms", 0)
                 resp_headers = matched_mock.get("headers") or {}
                 resp_body = matched_mock.get("body", "")
                 status_message = matched_mock.get("status_message", "")
+                resp_passthrough = bool(matched_mock.get("passthrough"))
+
+            # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器，只把响应拖慢
+            if resp_passthrough:
+                delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
+                real_url = f"{protocol}://{host}{original_path}" + (("?" + qs) if qs else "")
+                try:
+                    fwd_headers = {k: v for k, v in request.headers
+                                   if k.lower() not in ('host', 'proxy-connection', 'content-length')}
+                    real = _mock_forward_real(real_url, method, fwd_headers, request.get_data() or None)
+                except Exception as e:
+                    return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
+                print(f"[Remote Proxy] 仅延时透传: {real_url} (+{delay_ms}ms)")
+                if delay_ms > 0:
+                    time.sleep(delay_ms / 1000.0)
+                _save_proxy_log({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "method": method,
+                    "path": host + original_path + (("?" + qs) if qs else ""),
+                    "matched": True,
+                    "mapping_path": matched_mock.get("path"),
+                    "mapping_id": matched_mock.get("id"),
+                    "response_name": resp_name,
+                    "status": real.status_code,
+                    "status_message": status_message,
+                    "response_headers": dict(real.headers),
+                    "response_body": real.content.decode("utf-8", errors="ignore")[:20000],
+                    "passthrough": True,
+                    "delay_ms": delay_ms,
+                })
+                resp = make_response(real.content, real.status_code)
+                for k, v in real.headers.items():
+                    if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
+                        resp.headers[k] = v
+                resp.headers["X-Mock-Source"] = "real-server-delayed"
+                return resp
 
             if isinstance(resp_body, (dict, list)):
                 resp_body = json.dumps(resp_body, ensure_ascii=False)
@@ -5888,6 +6216,7 @@ def handle_proxy_request():
                 resp_delay_ms = 0
                 status_message = ""
                 resp_name = ""
+                resp_passthrough = False
                 if responses and isinstance(responses, list) and len(responses) > 0:
                     idx = min(active_idx, len(responses) - 1)
                     active = responses[idx]
@@ -5897,13 +6226,49 @@ def handle_proxy_request():
                     resp_headers = active.get("headers") or {}
                     resp_body = active.get("body", "")
                     status_message = active.get("status_message", "")
+                    resp_passthrough = _mock_passthrough(active, matched_mock)
                 else:
                     resp_status = matched_mock.get("status", 200)
                     resp_delay_ms = matched_mock.get("delay_ms", 0)
                     resp_headers = matched_mock.get("headers") or {}
                     resp_body = matched_mock.get("body", "")
                     status_message = matched_mock.get("status_message", "")
-                
+                    resp_passthrough = bool(matched_mock.get("passthrough"))
+
+                # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器（full_url 即真实地址），只把响应拖慢
+                if resp_passthrough:
+                    delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
+                    try:
+                        headers = {k: v for k, v in request.headers
+                                   if k.lower() not in ('host', 'proxy-connection', 'content-length')}
+                        real = _mock_forward_real(full_url, request.method, headers, request.get_data() or None)
+                    except Exception as e:
+                        return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
+                    print(f"[HTTP Proxy] 仅延时透传: {full_url} (+{delay_ms}ms)")
+                    if delay_ms > 0:
+                        time.sleep(delay_ms / 1000.0)
+                    _save_proxy_log({
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "method": method,
+                        "path": target_host + req_uri,
+                        "matched": True,
+                        "mapping_path": matched_mock.get("path"),
+                        "mapping_id": matched_mock.get("id"),
+                        "response_name": resp_name,
+                        "status": real.status_code,
+                        "status_message": status_message,
+                        "response_headers": dict(real.headers),
+                        "response_body": real.content.decode("utf-8", errors="ignore")[:20000],
+                        "passthrough": True,
+                        "delay_ms": delay_ms,
+                    })
+                    resp = make_response(real.content, real.status_code)
+                    for k, v in real.headers.items():
+                        if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
+                            resp.headers[k] = v
+                    resp.headers["X-Mock-Source"] = "real-server-delayed"
+                    return resp
+
                 if isinstance(resp_body, (dict, list)):
                     resp_body = json.dumps(resp_body, ensure_ascii=False)
                 
@@ -6167,6 +6532,7 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
             resp_headers = {}
             resp_body = ""
             status_message = ""
+            resp_passthrough = False
             if responses and isinstance(responses, list) and len(responses) > 0:
                 idx = min(active_idx, len(responses) - 1)
                 active = responses[idx]
@@ -6175,12 +6541,65 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
                 resp_headers = active.get("headers") or {}
                 resp_body = active.get("body", "")
                 status_message = active.get("status_message", "")
+                resp_passthrough = _mock_passthrough(active, matched_mock)
             else:
                 resp_status = matched_mock.get("status", 200)
                 resp_delay_ms = matched_mock.get("delay_ms", 0)
                 resp_headers = matched_mock.get("headers") or {}
                 resp_body = matched_mock.get("body", "")
                 status_message = matched_mock.get("status_message", "")
+                resp_passthrough = bool(matched_mock.get("passthrough"))
+
+            # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器，只把响应拖慢
+            if resp_passthrough:
+                delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
+                try:
+                    fwd_headers = {}
+                    for line in headers_raw.split('\r\n')[1:]:
+                        if ':' in line:
+                            k, v = line.split(':', 1)
+                            k, v = k.strip(), v.strip()
+                            if k.lower() not in ('host', 'proxy-connection', 'content-length'):
+                                fwd_headers[k] = v
+                    real = _mock_forward_real(
+                        "https://%s%s" % (
+                            target_host if target_port in (443, None) else "%s:%s" % (target_host, target_port),
+                            request_path,
+                        ),
+                        method, fwd_headers, request_body or None
+                    )
+                    if delay_ms > 0:
+                        time.sleep(delay_ms / 1000.0)
+                except Exception as fwd_err:
+                    err_body = f"仅延时模式转发真实服务器失败: {fwd_err}"
+                    ssl_client.send(
+                        f"HTTP/1.1 502 Bad Gateway\r\nContent-Length: {len(err_body.encode('utf-8'))}"
+                        f"\r\nConnection: close\r\n\r\n{err_body}".encode('utf-8')
+                    )
+                    try:
+                        ssl_client.close()
+                    except Exception:
+                        pass
+                    return
+                print(f"[CONNECT] 仅延时透传: https://{target_host}{request_path} (+{delay_ms}ms)")
+                real_head = f"HTTP/1.1 {real.status_code} OK\r\n"
+                real_head += "X-Mock-Source: real-server-delayed\r\n"
+                for k, v in real.headers.items():
+                    if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
+                        real_head += f"{k}: {v}\r\n"
+                real_head += f"Content-Length: {len(real.content)}\r\nConnection: close\r\n\r\n"
+                ssl_client.send(real_head.encode('utf-8') + real.content)
+                log_entry["status"] = real.status_code
+                log_entry["response_headers"] = dict(real.headers)
+                log_entry["response_body"] = real.content.decode('utf-8', errors='ignore')[:5000]
+                log_entry["passthrough"] = True
+                log_entry["delay_ms"] = delay_ms
+                _save_proxy_log(log_entry)
+                try:
+                    ssl_client.close()
+                except Exception:
+                    pass
+                return
 
             if isinstance(resp_body, (dict, list)):
                 resp_body = json.dumps(resp_body, ensure_ascii=False)
@@ -9440,7 +9859,8 @@ _CAPTURE_MAX = int(os.environ.get("CAPTURE_MAX", "2000"))
 # 目录放 data/ 下：系统临时目录会被磁盘清理/重启清掉，历史 body 随之永久丢失；
 # 启动时清空——流量列表本身随重启清空，旧 body 无主，顺带清掉上次异常退出的残留。
 import tempfile as _tempfile_mod
-_capture_body_dir = os.path.join(_app_root, "data", "capture_bodies")
+# body 落盘目录：默认 data/capture_bodies；CAPTURE_BODY_DIR 可用独立目录（并行起测试实例时不碰主实例数据）
+_capture_body_dir = os.environ.get("CAPTURE_BODY_DIR") or os.path.join(_app_root, "data", "capture_bodies")
 try:
     import shutil as _shutil_mod
     if os.path.isdir(_capture_body_dir):
@@ -9457,8 +9877,13 @@ _BODY_CACHE_MAX = 100             # 内存最多缓存 100 条，超出淘汰但
 _BODY_SIZE_LIMIT = 1 * 1024 * 1024  # 单个 body 超 1MB 截断（磁盘也不存完整版）
 
 
-def _extract_body_fields(data):
-    """从记录中拆出 body 字段（就地 pop），返回 body dict"""
+def _extract_body_fields(data, flow_id):
+    """从记录中拆出 body 字段（就地 pop），返回 body dict
+
+    二进制响应（图片 / 文件下载）单独处理：base64 解码后写 <flow_id>.bin，
+    body dict 只留体积等小字段——详情 JSON 里不带几 MB 的 base64，
+    图片预览与下载按需走 /api/capture/flows/<id>/body。
+    """
     body_data = {}
     for bk in ("req_headers", "req_body", "resp_headers", "resp_body"):
         val = data.pop(bk, None)
@@ -9467,6 +9892,21 @@ def _extract_body_fields(data):
                 body_data[bk] = val[:_BODY_SIZE_LIMIT] + "\n…[已截断，完整 %d 字节]" % len(val)
             else:
                 body_data[bk] = val
+    for bk in ("resp_binary", "resp_body_bytes", "resp_body_over"):
+        val = data.pop(bk, None)
+        if val is not None:
+            body_data[bk] = val
+    b64 = data.pop("resp_body_b64", None)
+    if isinstance(b64, str) and b64:
+        try:
+            import base64 as _b64
+            with open(os.path.join(_capture_body_dir, flow_id + ".bin"), "wb") as f:
+                f.write(_b64.b64decode(b64))
+            body_data["resp_bin_saved"] = True   # 原始字节已落盘，可预览 / 下载
+        except Exception:
+            body_data["resp_bin_saved"] = False
+    elif "resp_binary" in body_data:
+        body_data["resp_bin_saved"] = False      # 超过保存上限：不携带内容
     return body_data
 
 
@@ -9514,11 +9954,12 @@ def _load_body_disk(flow_id):
         return None
 
 def _remove_body_disk(flow_id):
-    """删除磁盘上的 body 文件"""
-    try:
-        os.remove(os.path.join(_capture_body_dir, flow_id + ".json"))
-    except OSError:
-        pass
+    """删除磁盘上的 body 文件（含二进制原始字节）"""
+    for ext in (".json", ".bin"):
+        try:
+            os.remove(os.path.join(_capture_body_dir, flow_id + ext))
+        except OSError:
+            pass
 
 
 # ── 抓包数据接口本机访问限制 ────────────────────────────────
@@ -10926,7 +11367,7 @@ def _ingest_capture_record(data):
             st["last"] = data.get("time") or ""
             _capture_mock_stats[mk["id"]] = st
     # 先落 body（锁外），再更新列表：列表一旦可见，详情所需的 body 已就绪
-    body_data = _extract_body_fields(data)
+    body_data = _extract_body_fields(data, flow_id)
     _persist_body(flow_id, body_data)
     # WebSocket 消息聚合兜底限长（addon 侧已限 100 条；防止旧版本 / 异常数据撑爆内存）
     ws = data.get("ws")
@@ -11006,6 +11447,34 @@ def api_capture_flows():
     return jsonify({"flows": items, "total": total})
 
 
+@app.route("/api/capture/flows/<flow_id>/body")
+def api_capture_flow_body(flow_id):
+    """二进制响应原始字节：详情页图片预览（<img src>）与「下载该文件」共用
+
+    只读落盘的 <flow_id>.bin，不进详情 JSON；?download=1 时按附件下载
+    （文件名取 URL 最后一段，无扩展名按 Content-Type 补）。
+    """
+    import mimetypes as _mt
+    path = os.path.join(_capture_body_dir, flow_id + ".bin")
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "该流量没有保存二进制内容（文本响应，或体积超过保存上限）"}), 404
+    with _capture_lock:
+        f = _capture_flow_index.get(flow_id)
+    ct = str((f or {}).get("content_type") or "").split(";")[0].strip().lower() or "application/octet-stream"
+    dl = request.args.get("download") in ("1", "true", "yes")
+    name = ""
+    if dl:
+        url_path = str((f or {}).get("path") or "").split("?")[0]
+        name = url_path.rstrip("/").rsplit("/", 1)[-1]
+        if "." not in name:
+            ext = _mt.guess_extension(ct) or ".bin"
+            name = (name or ("capture-" + flow_id)) + ext
+    from flask import send_file
+    resp = send_file(path, mimetype=ct, as_attachment=dl, download_name=name or None, conditional=True)
+    resp.headers["Cache-Control"] = "no-store"   # 流量会被淘汰 / 清空，不允许浏览器复用旧字节
+    return resp
+
+
 @app.route("/api/capture/flows/<flow_id>")
 def api_capture_flow_detail(flow_id):
     """单条流量详情（含请求/响应 headers 与 body，内存→磁盘二级查找）"""
@@ -11028,7 +11497,8 @@ def api_capture_flow_detail(flow_id):
     if cached:
         result.update(cached)
     else:
-        for bk in ("req_headers", "req_body", "resp_headers", "resp_body"):
+        for bk in ("req_headers", "req_body", "resp_headers", "resp_body",
+                   "resp_binary", "resp_body_bytes", "resp_body_over", "resp_bin_saved"):
             result.setdefault(bk, None)
         result["_body_expired"] = True
     return jsonify(result)

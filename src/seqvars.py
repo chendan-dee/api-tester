@@ -200,6 +200,29 @@ def assign(variables, only=None):
         return assigned
 
 
+def peek(variables, only=None):
+    """预览用：算出本次请求会用到哪些号，但不取号、不落盘
+
+    判定与 assign 完全一致（名字不在变量表 / 值等于上一次发出的号 → 要取号），
+    只是把「取到的新号」返回给调用方显示，seed 与 next/last_used 一律不动。
+    发送前预览靠它显示「这次会发 XX007」，看一眼预览不会白耗一个序号。
+    """
+    if not isinstance(variables, dict):
+        return {}
+    with _LOCK:
+        raw = _load_raw()
+        names = [k for k, v in raw.items() if is_seq(v)]
+        if only is not None:
+            names = [n for n in names if n in only]
+        out = {}
+        for name in names:
+            seq = raw[name]["seq"]
+            if name in variables and str(variables.get(name)) != str(seq.get("last_used")):
+                continue
+            out[name] = _render_item(seq)
+        return out
+
+
 def mark_override(variables, names):
     """（保留接口）显式登记“被接口提取 / 参数化写入”的变量名
 
