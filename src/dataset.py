@@ -231,7 +231,7 @@ def rows_for_steps(ordered_steps):
     used = set()
     for m in _REF_RE.finditer(blob):
         # 引用可能是 ${姓名} 或 ${姓名.字段}：与列头比对用根名（去掉 .字段 / [下标]）
-        head = re.split(r"[.\[]", m.group(1).strip(), 1)[0].strip()
+        head = re.split(r"[.\[]", m.group(1).strip(), maxsplit=1)[0].strip()
         if head:
             used.add(head)
     if not used:

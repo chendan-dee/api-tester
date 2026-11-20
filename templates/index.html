@@ -733,6 +733,11 @@ textarea { width: 100%; border: 1px solid var(--border); border-radius: var(--ct
 .ds-gen-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--text2); }
 .ds-gen-mode { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ds-gen-msg { font-size: 12px; color: var(--text3); }
+/* 批量造数：生成前先看列名，允许就地改名（接口里用 ${列名} 引用，猜不中时可以改顺手） */
+.ds-gen-cols { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--text2); }
+.ds-gen-cols-label { color: var(--text3); }
+.ds-gen-col { display: inline-flex; align-items: center; gap: 4px; }
+.ds-gen-col input { width: 96px; padding: 2px 6px; font-size: 12px; }
 /* 造数据：字段分组横向平铺，利用右侧空间、压缩纵向高度（min() 保证容器窄时轨道不超宽） */
 #gd-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: 0 24px; align-items: start; }
 /* 通用「写入到 Step」功能条（各子 tab 单独调用挂载） */
@@ -3801,7 +3806,7 @@ input.vars-title-input[readonly]:hover { background: transparent; }
         <div class="vars-ref-tip">
           引用方式：在 URL / 参数 / Headers / Body 里写 <code>${变量名}</code>；整串恰好是它时按原始类型注入（数字仍是数字）。
           <span class="vars-ref-dim">点每行「引用」可复制写法。</span>
-          <div style="margin-top:4px">内置动态变量（不用在本表定义，每次请求前现生成，点一下复制写法）：
+          <div style="margin-top:4px">内置动态变量（不用在本表定义，每次运行现生成：批量逐行各一份，同一行的多个步骤共用，点一下复制写法）：
             <div class="vars-dyn-list" data-dyn-list></div>
           </div>
         </div>
@@ -3855,13 +3860,14 @@ input.vars-title-input[readonly]:hover { background: transparent; }
         <div class="ds-gen" id="ds-gen" style="display:none">
           <div class="ds-gen-head">
             <b>批量造数</b>
-            <span class="ds-gen-hint">勾字段、填条数，生成后直接填进本表；列名默认用变量名（如 手机号 → mobile），生成后可在表头改。想重跑也换新值，把格子改填 <code>${__random_mobile}</code> 这类内置变量（清单见「变量管理」）</span>
+            <span class="ds-gen-hint">勾字段、填条数，生成后直接填进本表；下面「列名」可以在生成前改（接口里就用 <code>${列名}</code> 引用）。想重跑也换新值，把格子改填 <code>${__random_mobile}</code> 这类内置变量（清单见「变量管理」）</span>
             <span style="margin-left:auto">
               <button class="btn btn-muted btn-sm" onclick="dsGenPreset('default')">常用</button>
               <button class="btn btn-muted btn-sm" onclick="dsGenPreset('none')">清空</button>
             </span>
           </div>
           <div class="ds-gen-types" id="ds-gen-types"></div>
+          <div class="ds-gen-cols" id="ds-gen-cols"></div>
           <div class="ds-gen-bar">
             <label>生成条数</label>
             <input type="text" id="ds-gen-count" value="10" style="width:60px">
@@ -10696,12 +10702,43 @@ function dsGenToggle() {
         return '<div class="gd-group"><div class="gd-group-label">' + g.label + '</div>' +
           g.types.map(function(t) {
             return '<span class="gd-chip' + (GD_DEFAULT_TYPES.indexOf(t) >= 0 ? ' active' : '') +
-              '" data-type="' + t + '" onclick="this.classList.toggle(\'active\')">' + t + '</span>';
+              '" data-type="' + t + '" onclick="dsGenToggleType(this)">' + t + '</span>';
           }).join('') + '</div>';
       }).join('');
       dsGenRendered = true;
+      dsGenSyncCols();
     }
   }
+}
+
+// 勾/取消字段：同步下面「列名」那一行（已改过的名字尽量保留）
+function dsGenToggleType(chip) {
+  if (!chip) return;
+  chip.classList.toggle('active');
+  dsGenSyncCols();
+}
+
+// 当前勾选的字段 + 将要用的列名（读已有输入框里的值，保证改名不丢）
+function dsGenColsState() {
+  var prev = {};
+  document.querySelectorAll('#ds-gen-cols input[data-type]').forEach(function(inp) {
+    prev[inp.getAttribute('data-type')] = inp.value;
+  });
+  return dsGenSelectedTypes().map(function(t) {
+    var v = Object.prototype.hasOwnProperty.call(prev, t) ? prev[t] : (GD_VAR_NAMES[t] || t);
+    return { type: t, name: v };
+  });
+}
+
+function dsGenSyncCols() {
+  var box = document.getElementById('ds-gen-cols');
+  if (!box) return;
+  var list = dsGenColsState();
+  if (!list.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<span class="ds-gen-cols-label">列名</span>' + list.map(function(it) {
+    return '<label class="ds-gen-col" title="接口里用 ${' + escHtml(it.name) + '} 引用"><input type="text" data-type="' +
+      escHtml(it.type) + '" value="' + escHtml(it.name) + '"></label>';
+  }).join('');
 }
 
 // 快捷选择：default=常用字段 / none=清空
@@ -10710,6 +10747,7 @@ function dsGenPreset(mode) {
     if (mode === 'none') c.classList.remove('active');
     else c.classList.toggle('active', GD_DEFAULT_TYPES.indexOf(c.getAttribute('data-type')) >= 0);
   });
+  dsGenSyncCols();
 }
 
 function dsGenSelectedTypes() {
@@ -10717,38 +10755,77 @@ function dsGenSelectedTypes() {
     .map(function(c) { return c.getAttribute('data-type'); });
 }
 
-async function dsGenRun() {
+let dsGenBusy = false;   // 生成在途标记：连点两次会生成两批，还会写进已切换的表
+
+function dsGenMsg(text, kind) {
   var msg = document.getElementById('ds-gen-msg');
+  if (!msg) return;
+  msg.style.color = kind === 'err' ? 'var(--red)' : (kind === 'ok' ? 'var(--green)' : 'var(--text2)');
+  msg.textContent = text || '';
+}
+
+// 列名兜底 + 去重：默认用变量名，用户改空就回退；两个字段改成同名时后者补序号
+function dsGenUniqueCols(list) {
+  var seen = Object.create(null);
+  return list.map(function(it) {
+    var base = String(it.name || '').trim() || GD_VAR_NAMES[it.type] || it.type;
+    var name = base, n = 2;
+    while (seen[name]) { name = base + '_' + n; n += 1; }
+    seen[name] = true;
+    return { type: it.type, name: name };
+  });
+}
+
+async function dsGenRun() {
+  if (dsGenBusy) return;
   if (!_dsCur) { showToast('先在左侧「＋ 新建」或选一个数据集，再造数'); return; }
-  var types = dsGenSelectedTypes();
-  if (!types.length) { showToast('至少勾选一个字段'); return; }
-  var count = parseInt(document.getElementById('ds-gen-count').value) || 10;
+  var picked = dsGenUniqueCols(dsGenColsState());
+  if (!picked.length) { showToast('至少勾选一个字段'); return; }
+  var types = picked.map(function(p) { return p.type; });
+  var cols = picked.map(function(p) { return p.name; });
+  var countRaw = String(document.getElementById('ds-gen-count').value || '').trim();
+  var count = Number(countRaw);
+  if (!/^\d+$/.test(countRaw) || count < 1 || count > 500) {
+    dsGenMsg('条数填 1-500 的整数', 'err');   // 以前填 0 / 乱填会静默按 10 条生成
+    return;
+  }
   var modeEl = document.querySelector('input[name="ds-gen-mode"]:checked');
   var mode = modeEl ? modeEl.value : 'append';
-  if (mode === 'replace' && (_dsCur.rows || []).length) {
+  var hasRows = (_dsCur.rows || []).length > 0;
+  if (mode === 'replace' && hasRows) {
     var go = await customConfirm('覆盖整张表', '本表已有 ' + _dsCur.rows.length + ' 行，覆盖后旧数据会被清掉（点「保存」后不可恢复）。', '覆盖');
     if (!go) return;
   }
-  if (msg) { msg.style.color = 'var(--text2)'; msg.textContent = '正在生成…'; }
-  var data = await apiPost('/api/gen-data', { types: types, count: count });
-  if (!data || !data.ok) {
-    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = (data && data.error) || '生成失败'; }
+  var cur = _dsCur;   // 生成期间可能切数据集，写回前要认人
+  dsGenBusy = true;
+  dsGenMsg('正在生成…');
+  var data;
+  try {
+    data = await apiPost('/api/gen-data', { types: types, count: count });
+  } catch (e) {
+    // apiPost 在 fetch 失败 / 非 2xx 时会 throw，不接住就一直停在「正在生成…」
+    dsGenMsg('生成失败：' + ((e && e.message) || '接口不可用'), 'err');
     return;
+  } finally {
+    dsGenBusy = false;
   }
-  var cols = (data.columns || types).map(function(t) { return GD_VAR_NAMES[t] || t; });
+  if (!data || !data.ok) { dsGenMsg((data && data.error) || '生成失败', 'err'); return; }
+  if (_dsCur !== cur) { dsGenMsg('生成期间切换了数据集，本次结果已丢弃', 'err'); return; }
   var records = data.records || [];
-  if (mode === 'replace' || !(_dsCur.headers || []).length) {
-    _dsCur.headers = cols.slice();
-    _dsCur.rows = records.map(function(rec) {
+  // 覆盖模式下整表重建；只有表头的空表也重建，否则追加会留下「列1」这类占位列
+  var rebuilt = (mode === 'replace' || !(cur.headers || []).length || !hasRows);
+  if (rebuilt) {
+    cur.headers = cols.slice();
+    cur.rows = records.map(function(rec) {
       return cols.map(function(_cn, i) {
         var v = rec[types[i]];
         return v == null ? '' : String(v);
       });
     });
-    _dsCur.row_types = _dsCur.rows.map(function() { return 'normal'; });
+    cur.row_types = cur.rows.map(function() { return 'normal'; });
   } else {
-    // 追加：按列名合表——现有表有同名列（变量名或中文名）就写进那列，没有的补到末尾
-    var hdr = (_dsCur.headers || []).map(String);
+    // 追加：按列名合表——现有表有同名列（变量名或中文类型名）就写进那列，没有的补到末尾
+    var hdr = (cur.headers || []).map(String);
     var metas = cols.map(function(cn, i) { return { name: cn, type: types[i], col: -1 }; });
     metas.forEach(function(m) {
       for (var j = 0; j < hdr.length; j++) {
@@ -10758,7 +10835,7 @@ async function dsGenRun() {
     metas.forEach(function(m) {
       if (m.col < 0) { m.col = hdr.length; hdr.push(m.name); }
     });
-    var rows = (_dsCur.rows || []).map(function(r) {
+    var rows = (cur.rows || []).map(function(r) {
       var a = r.slice();
       while (a.length < hdr.length) a.push('');
       return a;
@@ -10771,21 +10848,19 @@ async function dsGenRun() {
       });
       rows.push(row);
     });
-    _dsCur.headers = hdr;
-    _dsCur.rows = rows;
-    _dsCur.row_types = _dsCur.row_types || [];
-    while (_dsCur.row_types.length < rows.length - records.length) _dsCur.row_types.push('normal');
-    records.forEach(function() { _dsCur.row_types.push('normal'); });
+    cur.headers = hdr;
+    cur.rows = rows;
+    cur.row_types = cur.row_types || [];
+    while (cur.row_types.length < rows.length - records.length) cur.row_types.push('normal');
+    records.forEach(function() { cur.row_types.push('normal'); });
   }
+  cur.source = '批量造数';   // 来源跟着数据走，别还写着「手动新建」
   _dsSel = {};
   dsMarkDirty();
   dsRender();
-  if (msg) {
-    msg.style.color = 'var(--green)';
-    // 不是当前数据集的话，运行前还得手动「设为当前」，一并提醒，省得以为批量没生效
-    var tail = (_dsCur.name === _dsActive) ? '' : '；这张表还不是「当前」，跑批量前点一下「设为当前」';
-    msg.textContent = '已填入 ' + records.length + ' 行 × ' + cols.length + ' 列，记得点「保存」' + tail;
-  }
+  // 不是当前数据集的话，运行前还得手动「设为当前」，一并提醒，省得以为批量没生效
+  var tail = (cur.name === _dsActive) ? '' : '；这张表还不是「当前」，跑批量前点一下「设为当前」';
+  dsGenMsg('已填入 ' + records.length + ' 行 × ' + cols.length + ' 列，记得点「保存」' + tail, 'ok');
 }
 
 function dsPickFile() {
@@ -10798,6 +10873,12 @@ function dsPickFile() {
 async function dsImport(input) {
   var f = input && input.files && input.files[0];
   if (!f) return;
+  // 导入会把 _dsCur 换成导入的表（同名即整表覆盖），当前表没保存的改动会直接丢
+  if (_dsDirty && _dsCur) {
+    var keep = await customConfirm('当前表有未保存的修改',
+      '导入后会切到「' + f.name + '」这张表（同名则整表覆盖），当前「' + _dsCur.name + '」没保存的修改会丢失。继续导入？', '继续导入');
+    if (!keep) { input.value = ''; return; }
+  }
   var fd = new FormData();
   fd.append('file', f);
   try {
@@ -11211,10 +11292,10 @@ async function _varsCellBlur(inp, i, f) {
   inp.parentNode.replaceChild(_varsCellTextNode(r, i, f), inp);
 }
 
-// ── 内置动态变量（引擎在发请求前现生成，见 engine.DYNAMIC_VARS）──
+// ── 内置动态变量（引擎在每次运行前现生成，见 engine.DYNAMIC_VARS）──
 // 变量管理 / 数据集合两处说明区共用这一份清单，新增内置变量只改这里 + engine
 var DYN_VARS = [
-  { n: '__random_mobile', t: '随机手机号', d: '11 位大陆手机号，每次请求换一个，注册/创建类不再撞号' },
+  { n: '__random_mobile', t: '随机手机号', d: '11 位大陆手机号，每次运行换一个（批量逐行各一份），注册/创建类不再撞号' },
   { n: '__random_uuid', t: '唯一 ID', d: 'UUID4，如 3f1c9a1e-6b2d-4c11-9f0a-2d7e5c8b1a44' },
   { n: '__timestamp', t: '秒级时间戳', d: '10 位数字，可当更新时间 / 签名时间' },
   { n: '__timestamp_ms', t: '毫秒时间戳', d: '13 位数字，可当防重放 nonce' }
@@ -15431,10 +15512,10 @@ function _casesRefTipHtml(kind) {
     rows = (d.vars || []).map(_casesRefVarRowHtml);
     foot = '当前环境变量覆盖同名全局变量；都没有时才会落到数据集的列';
   } else if (kind === 'dyn') {
-    hd = '内置动态变量<span class="cnt">' + (d.dyn || []).length + ' 个 · 每次请求前生成</span>';
+    hd = '内置动态变量<span class="cnt">' + (d.dyn || []).length + ' 个 · 每次运行生成</span>';
     rows = (d.dyn || []).map(function(it) {
       var tip = (it.info && it.info.value) || '';
-      return _casesRefRowHtml(it.name, '<span class="cases-reftip-val none">请求发出前随机生成</span>', '来源：内置 · ' + escHtml(tip));
+      return _casesRefRowHtml(it.name, '<span class="cases-reftip-val none">每次运行现生成</span>', '来源：内置 · ' + escHtml(tip));
     });
     foot = '执行报告与入参快照里显示的是替换后的真实值；完整清单见「变量管理」页的说明区';
   } else {
@@ -16814,10 +16895,14 @@ if (!window._casesPrevMenuBound) {
 }
 
 // 没取到值的 ${x} 引擎会原样保留：这里就地换成标红的 [未找到变量: x]
+// URL 里写的是编码过的 %24%7Bx%7D 时同样要标出来（否则摘要说「未解析」正文却看不出来）
 function _pvHighlight(text) {
-  return escHtml(String(text == null ? '' : text)).replace(/\$\{([^{}]{1,80})\}/g, function(_, nm) {
+  var miss = function(nm) {
     return '<span class="cases-prev-miss" title="当前上下文没有这个变量：检查变量管理 / 数据集 / 上一步提取">[未找到变量: ' + nm + ']</span>';
-  });
+  };
+  return escHtml(String(text == null ? '' : text))
+    .replace(/\$\{([^{}]{1,80})\}/g, function(_, nm) { return miss(nm); })
+    .replace(/%24%7B([^{}%]{1,80})%7D/gi, function(_, nm) { return miss(nm); });
 }
 
 function _pvRender() {
@@ -16860,6 +16945,13 @@ function _pvRender() {
   if (seqNames.length) {
     sum += '<span class="cases-prev-tag" title="自增变量在真正发送时才取号；预览只是把下一个号显示出来，不会消耗">自增 ' +
       escHtml(seqNames.map(function(k) { return k + '=' + String(seq[k]); }).join(' ')) + '（发送时取号）</span>';
+  }
+  // 动态变量预览里能看到，但发送时会重新生成一份——说明清楚，免得对不上以为出错
+  var dynMap = d.dyn || {};
+  var dynNames = Object.keys(dynMap);
+  if (dynNames.length) {
+    sum += '<span class="cases-prev-tag" title="内置动态变量（${__random_mobile} 等）每次发送前现生成；这里只是示意值，真正发出去的是发送那一刻生成的新值">动态 ' +
+      escHtml(dynNames.map(function(k) { return k + '=' + String(dynMap[k]); }).join(' ')) + '（发送时重新生成）</span>';
   }
   sum += unresolved.length
     ? '<span class="cases-prev-tag bad" title="这些 ${变量} 在当前上下文里没有值，发送时会被原样带出去">未解析 ' + unresolved.length + ' 个：' + escHtml(unresolved.join(' / ')) + '</span>'
@@ -17062,6 +17154,11 @@ function casesShowResp(d, restored) {
       var dsu = d.ds_used.values || {};
       var dsPairs = Object.keys(dsu).map(function(k) { return k + '=' + String(dsu[k]); }).join(' ');
       html += '<span class="cases-resp-meta" title="即发即看只跑一行；串联/批量执行会按行逐行展开">数据集 <b>' + escHtml(d.ds_used.name || '') + '</b> ' + escHtml(d.ds_used.label || '') + (dsPairs ? '：' + escHtml(dsPairs) : '') + '</span>';
+      // 这一行被标成「异常入参」时说明预期：单发只给人看，判定口径按「有没有被拦住」
+      if (d.ds_used.expected_type === 'error') {
+        var dsuBlocked = (d.status_code >= 400) || !!_casesBizErrorCode({ expected_type: 'error', status_code: d.status_code, response: d.resp_body });
+        html += '<span class="cases-resp-meta" style="color:' + (dsuBlocked ? '#15803d' : '#b45309') + '" title="该行在数据集里标记为「异常入参」：预期服务端拒绝/报错。单发仅供手工确认，批量执行按此口径统计拦截率">异常入参 · ' + (dsuBlocked ? '已被拦截' : '未被拦截') + '</span>';
+      }
     }
   }
   if (restored) {
@@ -18669,13 +18766,14 @@ function _casesBfApiOpts(onlyJson) {
   return out;
 }
 // 接口名常自带序号和括号说明（① 登录（参数化入参 userName/city））：「取自 …」里只留接口名本身
+// 括号里只认「补充说明」类字样；「查询订单（V2）」「退款（人工）」这种括号是名字的一部分，不能截
+var _BF_NOTE_RE = /[（(]\s*(?:参数化|入参|传参|引用|变量|提取|断言|JSON|json|Json|form|Form|表单|Body|body|Header|header|Query|query)/;
 function _casesBfApiName(api) {
   var raw = String(api || '').trim();
   var s = raw.replace(/^[①-⑳⑴-⒇⒈-⒛]\s*/, '');
   s = s.replace(/^(?:\(\d{1,2}\)|（\d{1,2}）|\d{1,2}\s*[.、．)）](?=\s)|[a-zA-Z]\s*[.、．)）](?=\s))\s*/, '');
-  // 括号里是入参/引用等补充说明，同一批接口往往大段重复，展示时一并去掉
-  var cut = s.search(/[（(]/);
-  if (cut > 0) s = s.slice(0, cut);
+  var m = _BF_NOTE_RE.exec(s);
+  if (m && m.index > 0) s = s.slice(0, m.index);
   return s.trim() || raw;
 }
 // 小表列头 / 提示里再限一下长度：③ 查单（引用 ${orderNo}…） → 查单

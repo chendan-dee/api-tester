@@ -242,7 +242,7 @@ def _referenced_var_names(obj):
     text = _decode_ref_urlenc(text)   # 编码过的引用也算引用（自增变量取号不能漏）
     names = set()
     for m in _VAR_REF_RE.finditer(text):
-        head = re.split(r"[.\[]", m.group(1).strip(), 1)[0].strip()
+        head = re.split(r"[.\[]", m.group(1).strip(), maxsplit=1)[0].strip()
         if head:
             names.add(head)
     return names
@@ -252,14 +252,25 @@ def _referenced_var_names(obj):
 # 内置动态变量：${__random_mobile} / ${__random_uuid} / ${__timestamp}
 # ═══════════════════════════════════════════════════════════════
 
-def _gen_mobile():
-    """随机大陆手机号：1 开头、第二位 3-9，共 11 位"""
-    return "1" + random.choice("3456789") + "".join(random.choice("0123456789") for _ in range(9))
+# 大陆手机号号段池：造数据（app._GD_GENERATORS）与动态变量共用这一份，
+# 改号段只改这里，避免两处规则分叉
+PHONE_PREFIXES = [
+    "130", "131", "132", "133", "134", "135", "136", "137", "138", "139",
+    "150", "151", "152", "153", "155", "156", "157", "158", "159",
+    "170", "171", "172", "173", "175", "176", "177", "178",
+    "180", "181", "182", "183", "184", "185", "186", "187", "188", "189",
+    "191", "198", "199",
+]
+
+
+def gen_mobile():
+    """随机大陆手机号：号段池 + 8 位数字，共 11 位"""
+    return random.choice(PHONE_PREFIXES) + "".join(random.choice("0123456789") for _ in range(8))
 
 
 # 键就是数据集 / 请求配置里写的占位符名（JMeter 风格双下划线前缀，不会和业务变量撞名）
 DYNAMIC_VARS = {
-    "__random_mobile": _gen_mobile,
+    "__random_mobile": gen_mobile,
     "__random_uuid": lambda: str(uuid.uuid4()),
     "__timestamp": lambda: int(time.time()),            # 秒级；整串替换时保持数字类型
     "__timestamp_ms": lambda: int(time.time() * 1000),  # 毫秒级
@@ -280,34 +291,41 @@ def _walk_strings(obj, out):
             _walk_strings(v, out)
 
 
-def _expand_dyn_value(obj, values):
-    """把变量值里写死的 ${__random_mobile} 换成本次生成的值
+def _expand_variable_refs(variables, skip):
+    """把变量值里对其它变量的引用就地展开，最多收敛 5 轮。
 
-    数据集合 / 变量管理的格子里可以直接填占位符（例：手机号列写 ${__random_mobile}），
-    运行到这行时整串替换成真实值，外层 ${mobile} 引用才拿得到东西。
+    典型场景（数据集合列 / 变量管理格子）：
+      mobile = ${__random_mobile}      动态变量，已写回真实值
+      phone  = ${mobile}               链式别名
+    单趟替换只能展开一层，这里按轮次收敛；循环引用（a=${b}、b=${a}）会在
+    值不再变化时自然停下，残留的引用仍交给正常替换链路处理。skip 里的键
+    （动态变量本身）不动，避免把刚生成的值再拿去替换。
     """
-    if isinstance(obj, str):
-        m = _DYN_REF_RE.fullmatch(obj)
-        if m:
-            return values.get(m.group(1), obj)          # 整串引用：保留原始类型（时间戳是数字）
-        if '${' not in obj:
-            return obj
-        return _DYN_REF_RE.sub(lambda mm: str(values[mm.group(1)]) if mm.group(1) in values else mm.group(0), obj)
-    if isinstance(obj, dict):
-        return {k: _expand_dyn_value(v, values) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_expand_dyn_value(v, values) for v in obj]
-    return obj
+    for _ in range(5):
+        changed = False
+        for key in list(variables.keys()):
+            if key in skip:
+                continue
+            val = variables[key]
+            new_val = _replace_deep(val, variables)
+            if new_val != val:
+                variables[key] = new_val
+                changed = True
+        if not changed:
+            break
 
 
 def _apply_dynamic_vars(req_cfg, variables):
-    """前置钩子：本次请求引用到的 ${__random_*} / ${__timestamp} 现生成真实值。
+    """前置钩子：本次运行引用到的 ${__random_*} / ${__timestamp} 现生成真实值。
 
     扫描范围是请求配置（url / headers / params / body）和变量值本身：数据集合
     里常见的写法是某列直接填 ${__random_mobile}，再在请求里用 ${mobile} 引用。
     生成后原地写回 variables —— 同一请求内多处引用取同一个值（注册时手机号要
-    前后一致），调用方拿到的入参快照也因此是真实值，不会剩下占位符；每次请求
-    重新生成。返回本次生成的 {变量名: 值}，供结果展示。
+    前后一致），调用方拿到的入参快照也因此是真实值，不会剩下占位符。
+
+    生成粒度是「每次运行、每个数据行一次」：批量执行换行重新生成；同一行内的
+    多个步骤共用这一组值（串联场景里第 2 步要能查到第 1 步注册的号）。
+    返回本次生成的 {变量名: 值}，供结果展示。
     """
     if not isinstance(variables, dict):
         return {}
@@ -326,13 +344,9 @@ def _apply_dynamic_vars(req_cfg, variables):
     if not used:
         return {}
     variables.update(used)
-    # 变量值里直接写的占位符就地展开，外层 ${字段名} 才能拿到真实值
-    for key, val in list(variables.items()):
-        if key in used:
-            continue
-        new_val = _expand_dyn_value(val, used)
-        if new_val is not val:
-            variables[key] = new_val
+    # 变量值里直接写的占位符就地展开，外层 ${字段名} 才能拿到真实值；
+    # 同时把「变量引用变量」按轮次收敛，否则链式别名会把 ${b} 原样发出去
+    _expand_variable_refs(variables, used)
     return used
 
 

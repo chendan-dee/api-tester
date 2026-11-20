@@ -18,6 +18,7 @@ data/_*.json
 cases/_*.json
 
 # runtime data (local only)
+data/config.json
 data/localdb/
 data/thumbs/
 data/capture_bodies/

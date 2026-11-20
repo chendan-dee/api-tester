@@ -2902,14 +2902,6 @@ _GD_INDUSTRIES = [
 _GD_STREETS = ["中山路", "解放路", "人民路", "建设路", "和平路", "长江路",
                "文化路", "新华路", "光明路", "幸福路", "学院路", "科技路"]
 
-_GD_PHONE_PREFIXES = [
-    "130", "131", "132", "133", "134", "135", "136", "137", "138", "139",
-    "150", "151", "152", "153", "155", "156", "157", "158", "159",
-    "170", "171", "172", "173", "175", "176", "177", "178",
-    "180", "181", "182", "183", "184", "185", "186", "187", "188", "189",
-    "191", "198", "199",
-]
-
 _GD_ID_AREAS = [
     "110101", "110102", "310101", "310104", "440103", "440305",
     "330102", "330106", "320102", "320505", "510104", "510107",
@@ -2949,7 +2941,9 @@ def _gd_birthday(min_age=18, max_age=65):
 
 
 def _gd_phone():
-    return random.choice(_GD_PHONE_PREFIXES) + "".join(str(random.randint(0, 9)) for _ in range(8))
+    """手机号：与动态变量 ${__random_mobile} 共用 engine.gen_mobile（号段池只维护一份）"""
+    import engine as E
+    return E.gen_mobile()
 
 
 def _gd_id_number():
@@ -4828,7 +4822,9 @@ def dataset_import():
         name = os.path.splitext(os.path.basename(f.filename))[0]
     try:
         headers, rows = DS.read_table(f.filename, f.stream)
-        data = DS.save(name, headers, rows, source=os.path.basename(f.filename))
+        # 导入是整表替换：行标记必须显式清空，否则同名重新导入会沿用上一版表的
+        # error 标记，把新数据的正常行按反向用例判定（dataset.save 不传时会保留旧标记）
+        data = DS.save(name, headers, rows, source=os.path.basename(f.filename), row_types=[])
         return jsonify({"ok": True, "dataset": data, "active": DS.active_name()})
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)}), 400

@@ -104,6 +104,13 @@ PHONE_PREFIXES = [
     "180", "181", "182", "183", "184", "185", "186", "187", "188", "189",
     "191", "198", "199",
 ]
+# 在本项目里跑时优先用 engine 的号段池（造数据 tab / ${__random_mobile} 同一份）；
+# 单独把这支脚本拷走时 import 会失败，退回上面自带的池，仍然可用
+try:
+    import engine as _engine
+    PHONE_PREFIXES = list(_engine.PHONE_PREFIXES)
+except Exception:
+    pass
 
 BANK_PREFIXES = [
     ("622202", "工商银行"), ("622848", "农业银行"), ("622700", "建设银行"),

@@ -3,6 +3,8 @@
 
 运行：cd .qoder/skills/api-tester/tests ; pytest -q
 """
+import json
+
 import pytest
 
 import engine
@@ -30,11 +32,13 @@ def captured(monkeypatch):
 
 
 def test_dict_body_sent_as_json(captured):
+    # dict body 自己 json.dumps(ensure_ascii=False) 后按 data 发：走 requests 的 json=
+    # 会把中文压成 \uXXXX，服务端按原文字符串比对（签名/用户名）时认不出来
     engine.do_request({"url": "https://a.com/x", "method": "POST",
                        "headers": {"content-type": "application/json"},
                        "body": {"flag": 1}})
-    assert captured["json"] == {"flag": 1}
-    assert "data" not in captured
+    assert "json" not in captured
+    assert json.loads(captured["data"]) == {"flag": 1}
 
 
 def test_raw_string_body_sent_as_data(captured):
