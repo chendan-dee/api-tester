@@ -8,8 +8,8 @@ C6/C7 优化：
 - 移除旧版 tkinter 文字标注（模态对话框会阻塞抓帧线程，实际不可用）
 
 用法：
-    python recorder.py --fps 15 --save-dir <DIR> --mode full
-    python recorder.py --fps 15 --save-dir <DIR> --mode region
+    python recorder.py --fps 20 --save-dir <DIR> --mode full
+    python recorder.py --fps 20 --save-dir <DIR> --mode region
 """
 
 import sys
@@ -177,7 +177,9 @@ def select_region():
 
 def main():
     parser = argparse.ArgumentParser(description='屏幕录制工具（CLI）')
-    parser.add_argument('--fps', type=int, default=15, help='录制帧率 (5-30)')
+    parser.add_argument('--fps', type=int, default=20, help='录制帧率 (10 省体积 / 20 流畅 / 30 最顺滑)')
+    parser.add_argument('--quality', default='hd', choices=['standard', 'hd', 'uhd'],
+                        help='输出分辨率档 (standard 720p / hd 1080p / uhd 屏幕原生)，同时决定编码 CRF')
     parser.add_argument('--save-dir', default=None, help='保存目录')
     parser.add_argument('--mode', choices=['full', 'region'], default='full',
                         help='录制模式：full=全屏，region=区域/窗口选择')
@@ -189,7 +191,7 @@ def main():
         'transfer', 'recordings'
     )
 
-    recorder = ScreenRecorder(fps=fps, save_dir=save_dir)
+    recorder = ScreenRecorder(fps=fps, save_dir=save_dir, quality=args.quality)
 
     # 停止信号处理
     def _sig(_signum, _frame):
@@ -232,8 +234,12 @@ def main():
         print("[录制] 启动失败")
         return 1
 
+    # 等抓帧时间轴真正建立（抓屏/编码器就绪）再写状态：
+    # 若在 _start() 后立刻用 time.time()，网页计时会早于视频第一帧，开头那段等于没录上
+    if not recorder.wait_started(timeout=10.0):
+        print("[录制] 启动超时：抓屏或编码器未就绪")
     _write_status(recording=True, paused=False, click_count=0,
-                  last_file='', start_time=time.time())
+                  last_file='', start_time=recorder.get_start_time() or time.time())
     print(f"[录制] 开始 (FPS={fps}, 区域={rw}x{rh}, 起点={rx},{ry})  按 Ctrl+C 停止")
 
     try:

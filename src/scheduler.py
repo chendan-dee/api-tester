@@ -11,7 +11,7 @@
 
 线程模型：单个守护线程每 5 秒扫描任务表，到期任务交给独立线程执行（防重入）。
 持久化：
-  data/_schedule_tasks.json              任务表
+  data/settings.json 的 schedule 段落         任务表
   data/_schedule_runs/<task_id>/<run>.json  每次执行的完整结果（每任务保留最近 50 次）
 """
 import io
@@ -30,6 +30,8 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 if _dir not in sys.path:
     sys.path.insert(0, _dir)
 
+import settings_store
+
 if getattr(sys, 'frozen', False):
     # 打包版：数据目录随 exe（sys.executable 所在目录），__file__ 指向包内虚拟路径不可用
     _app_root = os.path.dirname(os.path.abspath(sys.executable))
@@ -37,9 +39,8 @@ else:
     _app_root = os.path.dirname(_dir)
 CASES_DIR = os.path.join(_app_root, "cases")
 DATA_DIR = os.path.join(_app_root, "data")
-TASKS_FILE = os.path.join(DATA_DIR, "_schedule_tasks.json")
+# 任务表与预设变量均已并入 data/settings.json（schedule / variables 段落）
 RUNS_DIR = os.path.join(DATA_DIR, "_schedule_runs")
-VAR_FILE = os.path.join(DATA_DIR, "_variables.json")
 PARAMS_DIR = os.path.join(DATA_DIR, "_schedule_params")   # 参数化 Excel 持久目录
 
 PARAM_STRATEGIES = ("all_rows", "round_robin", "random_row")  # 参数化行选择策略
@@ -66,10 +67,9 @@ def _now():
 def _load_tasks_from_disk():
     global _tasks
     try:
-        with open(TASKS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = settings_store.load("schedule", [])
         _tasks = data if isinstance(data, list) else []
-    except (IOError, json.JSONDecodeError):
+    except Exception:
         _tasks = []
     # 启动恢复：上次进程退出时残留的 running 状态重置为等待，重算下次执行
     now = _now()
@@ -86,12 +86,8 @@ def _load_tasks_from_disk():
 def _save():
     """写盘（调用方需持有 _lock）"""
     try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        tmp = TASKS_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_tasks, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, TASKS_FILE)
-    except IOError as e:
+        settings_store.save("schedule", _tasks)
+    except Exception as e:
         print(f"  [调度] 保存任务表失败: {e}")
 
 
@@ -356,9 +352,10 @@ def _load_variables_values():
     自增变量（带 seq 元数据）不返回：它们由 seqvars.assign 在每次请求前取号。
     """
     try:
-        with open(VAR_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (IOError, json.JSONDecodeError):
+        raw = settings_store.load("variables", {})
+        if not isinstance(raw, dict):
+            return {}
+    except Exception:
         return {}
     result = {}
     for k, v in raw.items():

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>手机控制</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --border:#e2e8f0; --primary:#4f6ef7;
+    --text:#1e293b; --text2:#475569; --text3:#64748b; --mono:'Cascadia Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);font:13px/1.5 "Microsoft YaHei",system-ui,sans-serif;display:flex;flex-direction:column}
+  /* 顶栏：设备选择 + 刷新 + IP 连接，全部 30 高档位 */
+  .bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .bar select,.bar input,.btn{height:30px;border:1px solid var(--border);border-radius:7px;background:var(--card);
+    color:var(--text);font:13px/1 "Microsoft YaHei",system-ui,sans-serif;padding:0 10px;outline:none}
+  .bar select{cursor:pointer;min-width:230px}
+  .bar input{width:172px;font-family:var(--mono);display:none}
+  .bar input.show{display:block}
+  .btn{cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:5px;line-height:28px}
+  .btn:hover{border-color:#c7d2fe;color:var(--primary);background:#f4f7fd}
+  .btn-primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn-primary:hover{background:#3b5de7;border-color:#3b5de7;color:#fff}
+  .status{margin-left:auto;font-size:12px;color:var(--text3);display:flex;align-items:center;gap:6px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#cbd5e1}
+  .dot.on{background:#16a34a;box-shadow:0 0 6px rgba(22,163,74,.5)}
+  .dot.err{background:#dc2626}
+  /* 画面区 */
+  .stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:12px;background:#eef1f6;position:relative}
+  /* 放大画面时让 stage 可滚动：源图是原生分辨率，窗口放不下的细节可以滚着看 */
+  .stage.zoomed{overflow:auto;align-items:flex-start;justify-content:flex-start}
+  .stage.zoomed canvas{max-width:none;max-height:none;margin:auto}
+  canvas{max-width:100%;max-height:100%;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(15,23,42,.12);
+    touch-action:none;cursor:default;display:none}
+  canvas.show{display:block}
+  .tip{position:absolute;color:var(--text3);font-size:13px;text-align:center;line-height:2}
+  .tip b{color:var(--text2)}
+  /* 底栏：三个硬件键 + 输入文字 */
+  .foot{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--card);border-top:1px solid var(--border);flex-wrap:wrap}
+  .foot .sep{width:1px;height:20px;background:var(--border);margin:0 2px}
+  .foot input{flex:1;min-width:160px;height:30px;border:1px solid var(--border);border-radius:7px;padding:0 10px;
+    font:13px/1 "Microsoft YaHei",system-ui,sans-serif;outline:none}
+  .foot input:focus{border-color:#c7d2fe;box-shadow:0 0 0 3px rgba(79,110,247,.10)}
+  .hint{font-size:11px;color:var(--text3)}
+</style>
+</head>
+<body>
+  <div class="bar">
+    <select id="dev"><option value="">— 选择设备 —</option></select>
+    <button class="btn" id="refresh" title="重新扫描 adb / hdc 设备（手动断开过的也会重新出现）">🔄 刷新</button>
+    <button class="btn" id="offBtn" title="断开当前设备：停止投屏并从列表移除，点刷新可恢复显示">🔌 断开</button>
+    <button class="btn" id="ipBtn" title="用 IP:端口 连接无线调试设备（Android 走 adb，鸿蒙走 hdc）">🔗 IP 连接</button>
+    <button class="btn" id="zoomBtn" title="放大看画面细节（也可 Ctrl+滚轮）">🔍 放大</button>
+    <input id="ipAddr" placeholder="如 192.168.1.8:5555" spellcheck="false">
+    <div class="status"><span class="dot" id="dot"></span><span id="status">未连接</span></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="screen"></canvas>
+    <div class="tip" id="tip">
+      选一台设备开始投屏<br>
+      <b>鼠标左键 = 点手机</b>　拖动 = 滑动　按住 = 长按　滚轮 = 上下滑<br>
+      <b>Ctrl+滚轮 = 放大看细节</b>（窗口拉大也会更清）
+    </div>
+  </div>
+
+  <div class="foot">
+    <button class="btn" data-key="back" title="返回">← 返回</button>
+    <button class="btn" data-key="home" title="回到桌面">⌂ Home</button>
+    <button class="btn" data-key="power" title="电源键">⏻ 电源</button>
+    <span class="sep"></span>
+    <input id="text" placeholder="输入文字后回车，直接打进手机" spellcheck="false">
+    <button class="btn btn-primary" id="send">发送</button>
+  </div>
+
+  <script src="mirror.js"></script>
+</body>
+</html>

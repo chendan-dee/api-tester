@@ -3,7 +3,7 @@
 """
 seqvars.py — 预设变量中的「自增变量」序号器
 
-数据存储（复用 data/_variables.json，带 seq 元数据的变量即为自增变量）：
+数据存储（data/settings.json 的 variables 段落，带 seq 元数据的变量即为自增变量）：
   "orderNo": {
       "value": "XX002",                     ← 永远是「下一个将使用的值」
       "saved_at": "2026-10-26 10:00:00",
@@ -23,7 +23,6 @@ seqvars.py — 预设变量中的「自增变量」序号器
      请求前若发现 variables 中该名字被写成了「非上一次发出的值」，即判定为外部写入，
      本次不取号也不消耗序号。
 """
-import json
 import os
 import re
 import sys
@@ -33,13 +32,12 @@ from datetime import datetime
 _LOCK = threading.RLock()
 
 _here = os.path.dirname(os.path.abspath(__file__))
-if getattr(sys, "frozen", False):
-    # 打包版：数据目录随 exe（与 app.py / scheduler.py 的推导保持一致）
-    _app_root = os.path.dirname(os.path.abspath(sys.executable))
-else:
-    _app_root = os.path.dirname(_here)
-VARS_FILE = os.path.join(_app_root, "data", "_variables.json")
+if _here not in sys.path:
+    sys.path.insert(0, _here)
 
+import settings_store
+
+SECTION = "variables"   # 与 app.py 的 _load_variables/_save_variables 共用同一段落
 OVERRIDE_KEY = "__seq_override__"   # 保留键（历史兼容，当前逻辑不再依赖该标记）
 MAX_DIGITS = 12
 
@@ -49,21 +47,17 @@ def _now():
 
 
 def _load_raw():
-    """读取 _variables.json 原始字典（含元数据），失败时返回空字典"""
+    """读取 variables 段落原始字典（含元数据），失败时返回空字典"""
     try:
-        with open(VARS_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        raw = settings_store.load(SECTION, {})
         return raw if isinstance(raw, dict) else {}
-    except (IOError, OSError, json.JSONDecodeError):
+    except Exception:
         return {}
 
 
 def _save_raw(raw):
-    """原子写回：先写 .tmp 再替换，避免并发读到半截文件"""
-    tmp = VARS_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, VARS_FILE)
+    """整段写回（settings_store 内部原子替换，避免并发读到半截文件）"""
+    settings_store.save(SECTION, raw)
 
 
 # ═══════════════════════════════════════════════════

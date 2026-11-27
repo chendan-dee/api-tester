@@ -46,7 +46,7 @@ button, input, textarea, select { font-family: inherit; }
 .tf-bubble { border-radius: 10px; padding: 9px 13px; font-size: 15px; line-height: 1.6; color: #1a1a1a; word-break: break-all; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
 .tf-bubble-me { background: #e0e7ff; }
 .tf-bubble-other { background: #fff; }
-.tf-bubble-text { max-height: 150px; overflow-y: auto; }
+/* 文字气泡完整展示：不设 max-height、不出内部滚动条，长消息一次性看完（由列表本身滚动） */
 .tf-media { border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,.08); flex-shrink: 0; }
 .tf-cap { font-size: 11px; color: #98a2b3; margin-top: 4px; max-width: min(200px, 52vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tf-card { background: #fff; border: 1px solid #eceef2; border-radius: 10px; padding: 10px 12px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
@@ -67,6 +67,20 @@ button, input, textarea, select { font-family: inherit; }
 #m-modal video { max-width:min(95vw, 900px); max-height:80vh; width:100%; border-radius:8px; background:#000; }
 #m-modal .m-bar { margin-top:14px; display:flex; gap:8px; position:sticky; bottom:20px; }
 #m-modal .m-bar button { padding:10px 18px; border-radius:6px; border:1px solid rgba(255,255,255,.3); background:rgba(0,0,0,0.6); color:#fff; font-size:14px; cursor:pointer; }
+/* 文字弹窗：电脑发来的文字在手机上直接弹卡片展示，一键复制 */
+#t-modal { display:none; position:fixed; inset:0; z-index:10001; background:rgba(15,23,42,.45); align-items:center; justify-content:center; padding:18px; }
+#t-modal.open { display:flex; }
+#t-modal .t-card { width:100%; max-width:520px; max-height:78vh; background:#fff; border-radius:14px; box-shadow:0 16px 40px rgba(15,23,42,.24); display:flex; flex-direction:column; overflow:hidden; }
+#t-modal .t-head { display:flex; align-items:center; gap:8px; padding:14px 16px 10px; border-bottom:1px solid #eef1f6; flex-shrink:0; }
+#t-modal .t-title { font-size:14px; font-weight:600; color:#1a1a1a; }
+#t-modal .t-time { margin-left:auto; font-size:11.5px; color:#98a2b3; font-variant-numeric:tabular-nums; }
+#t-modal .t-close { width:32px; height:32px; border:none; border-radius:50%; background:#f1f4fa; color:#64748b; font-size:16px; line-height:1; cursor:pointer; flex:0 0 auto; padding:0; }
+#t-modal .t-close:active { background:#e6ebf5; }
+#t-modal .t-body { padding:16px; overflow-y:auto; -webkit-overflow-scrolling:touch; font-size:14.5px; line-height:1.75; color:#1a1a1a; white-space:pre-wrap; word-break:break-word; user-select:text; -webkit-user-select:text; }
+#t-modal .t-foot { display:flex; gap:10px; padding:12px 16px 16px; border-top:1px solid #eef1f6; flex-shrink:0; }
+#t-modal .t-btn { flex:1; height:44px; border-radius:12px; font-size:15px; font-weight:600; cursor:pointer; border:1px solid #e0e1e4; background:#fff; color:#475569; }
+#t-modal .t-btn.t-primary { border-color:#4f6ef7; background:#4f6ef7; color:#fff; box-shadow:0 2px 8px rgba(79,110,247,.28); }
+#t-modal .t-btn:active { transform:scale(.99); }
 /* 下载结果提示：底部抽屉，显示文件落点（浏览器不允许网页读取真实下载路径，只能给系统级位置） */
 #save-tip { display:none; position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:10001; align-items:flex-end; justify-content:center; }
 #save-tip.open { display:flex; }
@@ -230,6 +244,22 @@ button, input, textarea, select { font-family: inherit; }
     <div id="m-modal-content"></div>
   </div>
   <div class="m-bar" id="m-modal-bar"></div>
+</div>
+
+<!-- 文字弹窗：电脑发来的文字直接弹卡片，可一键复制 -->
+<div id="t-modal" onclick="if(event.target===this)closeTextModal()">
+  <div class="t-card" role="dialog" aria-modal="true">
+    <div class="t-head">
+      <span class="t-title" id="t-modal-title">电脑发来的文字</span>
+      <span class="t-time" id="t-modal-time"></span>
+      <button class="t-close" onclick="closeTextModal()" aria-label="关闭">✕</button>
+    </div>
+    <div class="t-body" id="t-modal-body"></div>
+    <div class="t-foot">
+      <button class="t-btn" onclick="closeTextModal()">关闭</button>
+      <button class="t-btn t-primary" onclick="copyTextModal()">复制</button>
+    </div>
+  </div>
 </div>
 
 <!-- 下载结果提示（显示文件落点） -->
@@ -477,7 +507,12 @@ function _connectSSE() {
         loadItems();
       } else if (msg.event === 'new_item') {
         // 互传新消息（文本/文件）：即时刷新列表；页面在后台时累计未读红点（微信式，不弹提示）
-        loadItems();
+        loadItems().then(function() {
+          // 电脑发来的文字：手机上直接弹卡片（自己发的不弹，同一 id 不重复弹）
+          if (msg.item_type === 'text' && msg.device_id && msg.device_id !== _deviceId && !_tModalSeen[msg.id]) {
+            openTextModal(msg.id);
+          }
+        });
         if (msg.device_id && msg.device_id !== _deviceId && document.hidden) {
           _mUnread++;
           _renderUnreadBadge();
@@ -632,10 +667,19 @@ document.addEventListener('click', function(e) {
   var am = document.getElementById('attach-menu');
   if (am && am.classList.contains('open') && !e.target.closest('.attach-wrap')) am.classList.remove('open');
 });
-// 输入框随内容自增高（上限 96px，与 CSS max-height 一致）
+// 输入框随内容自增高（上限 96px，与 CSS max-height 一致）；
+// 程序里清空 value 不会触发 input 事件，发送后传 reset=true 撤掉内联高度，交回 CSS 最小高度
+function fitTextInput(reset) {
+  var ta = document.getElementById('text-input');
+  if (!ta) return;
+  // 严格比较：input 监听器会把 Event 对象当首参传进来，不能被当成 reset
+  if (reset === true) { ta.style.height = ''; return; }
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 96) + 'px';
+}
 (function() {
   var ta = document.getElementById('text-input');
-  if (ta) ta.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 96) + 'px'; });
+  if (ta) ta.addEventListener('input', fitTextInput);
 })();
 
 async function registerDevice() {
@@ -695,7 +739,7 @@ async function sendText() {
       body: JSON.stringify({ text: text, device_id: _deviceId, device_name: _deviceName || _deviceId })
     });
     var data = await res.json();
-    if (data.ok) { document.getElementById('text-input').value = ''; showToast('已发送'); loadItems(); }
+    if (data.ok) { document.getElementById('text-input').value = ''; fitTextInput(true); showToast('已发送'); loadItems(); }
   } catch(e) { showToast('发送失败'); }
 }
 
@@ -1146,7 +1190,7 @@ function renderItems(items) {
     html += '<div class="tf-main">';
     if (!isMe) html += '<div class="tf-name">' + (isPcSender ? '\u7535\u8111' : esc(item.device_name)) + '</div>';
     if (item.type === 'text') {
-      html += '<div class="tf-bubble ' + (isMe ? 'tf-bubble-me' : 'tf-bubble-other') + ' tf-bubble-text">' + esc(item.text) + '</div>';
+      html += '<div class="tf-bubble ' + (isMe ? 'tf-bubble-me' : 'tf-bubble-other') + ' tf-bubble-text" onclick="openTextModal(\'' + item.id + '\')" title="点击查看全文与复制">' + esc(item.text) + '</div>';
     } else if (item.type === 'uploading') {
       // 上传中的占位记录：本页正在上传时显示进行中；刷新后遗留的在途记录提供"继续上传"重试入口
       var _isActiveUp = !!item.file_id && !!_localUploading[item.file_id];
@@ -1269,13 +1313,52 @@ function copyText(id) {
   var item = _itemsCache.find(function(i) { return i.id === id; });
   if (!item || !item.text) return;
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(item.text).then(function() { showToast('已复制'); });
+    navigator.clipboard.writeText(item.text).then(function() { showToast('已复制'); })
+      .catch(function() { _copyFallback(item.text); });
   } else {
-    var ta = document.createElement('textarea');
-    ta.value = item.text; ta.style.cssText = 'position:fixed;left:-9999px';
-    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
-    document.body.removeChild(ta); showToast('已复制');
+    _copyFallback(item.text);
   }
+}
+
+// 非安全上下文（http 局域网）走 execCommand：textarea 必须在可视区且被选中，
+// 原先放 left:-9999px，部分手机浏览器会复制出空串
+function _copyFallback(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  showToast(ok ? '已复制' : '复制失败，请长按文字手动复制');
+}
+
+// ── 文字弹窗：电脑发来的文字在手机上以卡片展示，可一键复制 ──
+var _tModalItem = null, _tModalSeen = {};
+
+function openTextModal(id) {
+  var item = _itemsCache.find(function(i) { return i.id === id; });
+  if (!item || !item.text) return;
+  _tModalItem = item;
+  _tModalSeen[item.id] = 1;
+  var isMe = item.device_id ? item.device_id === _deviceId : item.source !== 'desktop';
+  document.getElementById('t-modal-title').textContent = isMe ? '我发出的文字' : '电脑发来的文字';
+  document.getElementById('t-modal-time').textContent = _tfTimeText(item);
+  document.getElementById('t-modal-body').textContent = item.text;
+  document.getElementById('t-modal').classList.add('open');
+}
+
+function closeTextModal() {
+  document.getElementById('t-modal').classList.remove('open');
+  _tModalItem = null;
+}
+
+function copyTextModal() {
+  if (_tModalItem) copyText(_tModalItem.id);
 }
 
 async function copyImg(id) {

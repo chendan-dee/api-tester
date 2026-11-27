@@ -11,20 +11,28 @@ row_types 与 rows 一一对应，记录这一行是正向入参（normal）还�
 
 接口里写 ${字段名} 引用当前数据集的列，运行时按行执行：
 第一行跑完整串步骤 → 第二行再跑一遍。没引用任何字段时照常只跑一次。
-当前数据集记在 data/_dataset_active.json（{"name": "..."}）。
+当前数据集记在 data/settings.json 的 dataset_active 段落（{"name": "..."}）。
 """
 import csv
 import io
 import json
 import os
 import re
+import sys
 import threading
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DATASET_DIR = os.path.join(DATA_DIR, "_datasets")
-ACTIVE_FILE = os.path.join(DATA_DIR, "_dataset_active.json")
+# 当前数据集并入了统一配置（原 data/_dataset_active.json）
+ACTIVE_SECTION = "dataset_active"
+
+_dir = os.path.dirname(os.path.abspath(__file__))
+if _dir not in sys.path:
+    sys.path.insert(0, _dir)
+
+import settings_store
 
 _LOCK = threading.Lock()
 # ${...} 引用：列名可以是中文（如「姓名」「手机号」）或任意非 {} 字符，
@@ -191,10 +199,43 @@ def delete(name):
     return removed
 
 
+def rename(old, new):
+    """重命名数据集：换文件名 + 改里面的 name 字段，返回重命名后的数据集
+
+    当前数据集指针跟着跑（否则「当前」会指向已不存在的名字，运行时按行展开直接失效）。
+    重名直接报错，不做静默覆盖：改名手滑覆盖掉另一张表的数据是不可逆的。
+    """
+    old_safe = _safe_name(old)
+    new_safe = _safe_name(new)
+    if not new_safe:
+        raise ValueError("数据集名称不能为空")
+    if not old_safe or not os.path.exists(_path(old_safe)):
+        raise ValueError("数据集不存在：%s" % (old_safe or ""))
+    bad = set('\\/:*?"<>|')
+    if any(ch in bad for ch in new_safe):
+        raise ValueError('数据集名称不能包含 \\ / : * ? " < > | 这些字符')
+    if old_safe == new_safe:
+        return load(new_safe)
+    if os.path.exists(_path(new_safe)):
+        raise ValueError("已存在同名数据集：%s" % new_safe)
+    data = load(old_safe) or {}
+    data["name"] = new_safe
+    data["updated_at"] = _now()
+    # 先写新文件再删旧文件：中途失败也不会把表搞丢
+    with _LOCK:
+        tmp = _path(new_safe) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _path(new_safe))
+        os.remove(_path(old_safe))
+    if active_name() == old_safe:
+        set_active(new_safe)   # set_active 自己拿锁，不能放在上面的 with 里
+    return data
+
+
 def active_name():
     try:
-        with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f) or {}
+        d = settings_store.load(ACTIVE_SECTION, {}) or {}
         return str(d.get("name") or "")
     except Exception:
         return ""
@@ -204,11 +245,7 @@ def set_active(name):
     safe = _safe_name(name)
     if safe and not os.path.exists(_path(safe)):
         raise ValueError("数据集不存在：%s" % safe)
-    with _LOCK:
-        tmp = ACTIVE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"name": safe}, f, ensure_ascii=False)
-        os.replace(tmp, ACTIVE_FILE)
+    settings_store.save(ACTIVE_SECTION, {"name": safe})
     return safe
 
 

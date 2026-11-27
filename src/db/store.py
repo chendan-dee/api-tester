@@ -2,15 +2,24 @@
 """数据源配置持久化
 
 密码用 Windows DPAPI 加密后保存（同一用户同一机器才能解开），不落明文。
+数据源清单存于 data/settings.json 的 db_sources 段落（原 data/_db_sources.json）。
 """
 import base64
 import ctypes
-import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
+
+try:
+    import settings_store
+except ImportError:  # 调用方只把 src/db 加进 sys.path 的少见情况
+    _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+    import settings_store
 
 _LOCK = threading.Lock()
 
@@ -66,28 +75,25 @@ def decrypt_password(enc):
 
 
 class SourceStore:
+    SECTION = "db_sources"   # settings.json 中的段落名（原 _db_sources.json 整文件）
+
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.path = os.path.join(data_dir, "_db_sources.json")
         self.local_dir = os.path.join(data_dir, "localdb")
         os.makedirs(self.local_dir, exist_ok=True)
 
     def _load(self):
         try:
-            if os.path.isfile(self.path):
-                with open(self.path, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                if isinstance(data, list):
-                    return data
+            data = settings_store.load(self.SECTION, [])
+            if isinstance(data, list):
+                return data
         except Exception:
             pass
         return []
 
     def _save(self, items):
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(items, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+        # 整段覆盖 == 原「整文件覆盖」，DPAPI 密文原样搬运
+        settings_store.save(self.SECTION, items)
 
     @staticmethod
     def public(item):

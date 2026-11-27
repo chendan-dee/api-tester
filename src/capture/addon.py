@@ -5,8 +5,9 @@
 挂载到 mitmdump（-s addon.py），承担三件事：
 1. 流量记录：每笔请求/响应的摘要与详情经后台线程批量上报
    /api/capture/report（队列满时丢弃，绝不阻塞代理事件循环）；
-2. 改包 Mock：命中「启用中」的规则（独立规则库 data/_capture_mock.json）直接
-   本地响应，不发真实请求；
+2. 改包 Mock：命中「启用中」的规则（独立规则库 data/_capture_mock.json）——
+   模式 mock 直接本地响应、不发真实请求；模式 patch 让请求真实发出，
+   在响应阶段只覆盖指定字段（其余字段保持真实数据）；
 3. 断点 / 高级弱网：请求或响应挂起等前端编辑放行（300s 超时自动放行）；
    按档位注入延迟 / 丢包 / 上下行带宽限速 / 间歇卡顿（真·逐块流式限速）。
 
@@ -243,6 +244,212 @@ def _mock_response_parts(m, library):
     return status, msg, headers, body_bytes, delay, name
 
 
+# ── 真实响应 + 改字段（patch）────────────────────────────────
+# 与代理 Mock 的 patch 不同：抓包引擎里请求本来就要真实发出，所以不做「先取真实
+# 响应再回放」——请求照常转发，response 阶段就地改写 JSON 字段。好处是天然只打
+# 一次真实服务（不需要缓存），写接口也不会因为取真实数据被重复执行。
+def _mock_active_entry(m):
+    """规则当前激活的响应条目（取值口径与 _mock_response_parts 一致）"""
+    responses = m.get("responses")
+    if isinstance(responses, list) and responses:
+        try:
+            idx = min(int(m.get("active_response") or 0), len(responses) - 1)
+        except Exception:
+            idx = 0
+        entry = responses[max(idx, 0)]
+        if isinstance(entry, dict):
+            return entry
+    return m
+
+
+def _mock_mode(m):
+    """规则当前模式：patch=真实响应+改字段，其余（mock）=本地合成响应"""
+    entry = _mock_active_entry(m)
+    mode = str(entry.get("mode") or m.get("mode") or "mock").strip().lower()
+    return "patch" if mode == "patch" else "mock"
+
+
+def _mock_patch_spec(m, library):
+    """→ (patches, delay_ms, response_name)；延时口径与合成响应一致（报文级优先、否则库全局）"""
+    entry = _mock_active_entry(m)
+    patches = entry.get("patches")
+    if not isinstance(patches, list):
+        patches = m.get("patches") if isinstance(m.get("patches"), list) else []
+    try:
+        delay = int(entry.get("delay_ms") or 0)
+    except Exception:
+        delay = 0
+    if delay <= 0:
+        try:
+            delay = int(library.get("delay_ms") or 0)
+        except Exception:
+            delay = 0
+    return patches, delay, (entry.get("name") or "")
+
+
+def _mock_confirm(m):
+    """命中后是否暂停等人工确认（报文级优先，其次规则级）"""
+    entry = _mock_active_entry(m)
+    return bool(entry.get("confirm") or m.get("confirm"))
+
+
+def _patch_tokens(path):
+    """JSONPath 拆 token：$.data.list[0].id → ['data', 'list', 0, 'id']（$ 与方括号可省）"""
+    s = str(path or "").strip()
+    if not s:
+        return []
+    s = re.sub(r"\[['\"]([^'\"]+)['\"]\]", r".\1", s)
+    s = s.replace("[", ".").replace("]", "")
+    s = s.lstrip("$").strip(".")
+    toks = []
+    for part in re.split(r"\.+", s):
+        if part == "":
+            continue
+        toks.append(int(part) if part.isdigit() else part)
+    return toks
+
+
+def _patch_value(p):
+    """字段新值：json=True（默认）时按 JSON 解析数字/布尔/对象，否则一律当字符串"""
+    val = p.get("value", "")
+    if p.get("json", True) is False:
+        return "" if val is None else str(val)
+    if isinstance(val, (dict, list, int, float, bool)) or val is None:
+        return val
+    try:
+        return json.loads(str(val))
+    except Exception:
+        return str(val)
+
+
+def _patch_apply(obj, patches):
+    """按 [{path,value,op,json}] 就地覆盖 JSON，返回 (命中条数, 错误列表)
+
+    语义与主服务 _mock_patch_apply 完全一致（同一套字段写法，两边行为不能有差异）：
+    对象缺的中间层自动建空对象；数组下标越界记错误不造数据；末尾下标当追加。
+    """
+    applied = 0
+    errors = []
+    for i, p in enumerate(patches or []):
+        if not isinstance(p, dict) or p.get("enabled") is False:
+            continue
+        path = p.get("path") or ""
+        op = str(p.get("op") or "set").lower()
+        toks = _patch_tokens(path)
+        if not toks:
+            errors.append("第%d条路径为空" % (i + 1))
+            continue
+        cur = obj
+        failed = False
+        for depth, tok in enumerate(toks[:-1]):
+            nxt = toks[depth + 1]
+            if isinstance(cur, dict):
+                if tok not in cur or cur[tok] is None:
+                    if isinstance(nxt, int):
+                        errors.append("%s 的父级不存在，不能凭空造数组" % path)
+                        failed = True
+                        break
+                    cur[tok] = {}
+                cur = cur[tok]
+            elif isinstance(cur, list):
+                if not isinstance(tok, int) or tok < 0 or tok >= len(cur):
+                    errors.append("%s 父级下标越界" % path)
+                    failed = True
+                    break
+                cur = cur[tok]
+            else:
+                errors.append("%s 的父级不是对象/数组" % path)
+                failed = True
+                break
+        if failed:
+            continue
+        last = toks[-1]
+        if isinstance(cur, dict):
+            if op == "delete":
+                cur.pop(last, None)
+            else:
+                cur[last] = _patch_value(p)
+            applied += 1
+        elif isinstance(cur, list):
+            if isinstance(last, int) and last == len(cur) and op != "delete":
+                cur.append(_patch_value(p))
+                applied += 1
+            elif not isinstance(last, int) or last < 0 or last >= len(cur):
+                errors.append("%s 下标越界" % path)
+            elif op == "delete":
+                cur.pop(last)
+                applied += 1
+            else:
+                cur[last] = _patch_value(p)
+                applied += 1
+        else:
+            errors.append("%s 的父级不是对象/数组" % path)
+    return applied, errors
+
+
+async def _apply_mock_patch(flow):
+    """真实响应 + 改字段：响应阶段就地覆盖指定字段，其余保持真实数据
+
+    兜底（宁可原样返回，也不让链路断）：
+    - 响应不是 JSON / 超大响应被流式透传 / 解压失败 → 原样返回真实响应；
+    - 字段路径写错 → 已命中的照改，其余记错误码；错误码随流量记录回传展示。
+    """
+    info = flow.metadata.get("cap_mock_patch") or {}
+    resp = flow.response
+    mock = flow.metadata.get("cap_mock") or {}
+    patches = info.get("patches") or []
+    try:
+        delay = int(info.get("delay_ms") or 0)
+    except Exception:
+        delay = 0
+    if resp is None:
+        return
+    if delay > 0:  # 延时：拖慢响应（等价「真实响应 + 慢」）
+        await asyncio.sleep(min(delay, 60000) / 1000.0)
+    if not patches:  # 没配字段：等同真实透传，不做任何改写
+        mock.update({"patch_applied": 0, "patch_total": 0, "patch_error": "no-patches"})
+        flow.metadata["cap_mock"] = mock
+        return
+    applied, err = 0, ""
+    if getattr(resp, "raw_content", None) is None:  # 超大响应流式透传，内容不在本阶段
+        applied, err = 0, "body-streamed"
+    else:
+        try:
+            raw = resp.get_content(strict=False) or b""
+        except Exception:
+            raw = b""
+            applied, err = 0, "undecodable"
+        text = raw.decode("utf-8", errors="ignore")
+        try:
+            obj = json.loads(text)
+        except Exception:
+            obj = None
+            applied, err = 0, "not-json"
+        if obj is not None:
+            applied, errs = _patch_apply(obj, patches)
+            if errs:
+                err = "patch-failed"
+            try:
+                body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            except Exception:
+                body = None
+                err = err or "patch-failed"
+            if body is not None:
+                # 改写后体积 / 编码都变了：压缩与分帧头必须摘掉，重算交给 mitmproxy
+                for k in ("content-encoding", "transfer-encoding"):
+                    try:
+                        if k in resp.headers:
+                            del resp.headers[k]
+                    except Exception:
+                        pass
+                try:
+                    resp.set_content(body)
+                except Exception:
+                    applied, err = 0, "patch-failed"
+    mock.update({"patch_applied": applied, "patch_total": len(patches), "patch_error": err})
+    flow.metadata["cap_mock"] = mock
+
+
 # ── 断点：挂起等前端决策 ─────────────────────────────────────
 def _post_json_sync(url, payload, timeout):
     """同步 POST JSON（在事件循环之外的线程中执行），返回响应 dict 或 None"""
@@ -326,14 +533,20 @@ def _break_flow_info(flow, phase):
     return info
 
 
-async def _wait_break(phase, flow):
-    """挂起当前请求/响应，等前端编辑决策（超时/异常自动放行）"""
+async def _wait_break(phase, flow, timeout=320, extra=None):
+    """挂起当前请求/响应，等前端编辑决策（超时/异常自动放行）
+
+    timeout 同时传给后端：普通断点 300s；改包 Mock「命中时暂停」传 60s，避免客户端挂太久。
+    extra 里的 kind/note 会透传到前端（区分「断点」与「Mock 确认」）。
+    """
     if not _BREAK_URL:
         return {"action": "continue"}
-    payload = {"phase": phase, "flow": _break_flow_info(flow, phase)}
+    payload = {"phase": phase, "flow": _break_flow_info(flow, phase), "timeout": timeout}
+    if isinstance(extra, dict):
+        payload.update(extra)
     try:
         loop = asyncio.get_event_loop()
-        resp = await loop.run_in_executor(None, _post_json_sync, _BREAK_URL, payload, 320)
+        resp = await loop.run_in_executor(None, _post_json_sync, _BREAK_URL, payload, timeout + 20)
     except Exception:
         resp = None
     if isinstance(resp, dict) and isinstance(resp.get("decision"), dict):
@@ -1260,11 +1473,25 @@ class CaptureAddon:
                     flow.metadata["cap_break"] = "drop"
                     return
                 _apply_req_decision(flow, dec)
-            # 2) 改包 Mock：命中「启用中」的规则直接本地响应（不发真实请求）
+            # 2) 改包 Mock：命中「启用中」的规则按模式处理
+            #    mock  = 本地合成响应（不发真实请求）
+            #    patch = 真实响应 + 只改指定字段：不合成、不阻断，请求照常转发，
+            #            响应阶段再由 _apply_mock_patch 就地改写（天然只打一次真实服务）
             #    拦截与否由每条规则自身的 enabled 决定（无全局总开关）
             path = flow.request.path.split("?")[0]
             m = _match_mock(flow.request.method, flow.request.pretty_host, path)
             if m is not None:
+                if _mock_mode(m) == "patch":
+                    patches, delay, name = _mock_patch_spec(m, _mock_cfg())
+                    confirm = _mock_confirm(m)
+                    flow.metadata["cap_mock"] = {
+                        "id": m.get("id"), "name": name or (m.get("path") or ""),
+                        "mode": "patch", "delay_ms": delay, "patch_total": len(patches),
+                        "confirm": confirm,
+                    }
+                    flow.metadata["cap_mock_patch"] = {"patches": patches, "delay_ms": delay,
+                                                     "confirm": confirm}
+                    return
                 status, msg, headers, body, delay, name = _mock_response_parts(m, _mock_cfg())
                 if delay > 0:
                     await asyncio.sleep(min(delay, 60000) / 1000.0)
@@ -1274,6 +1501,7 @@ class CaptureAddon:
                 flow.response = resp
                 flow.metadata["cap_mock"] = {
                     "id": m.get("id"), "name": name or (m.get("path") or ""), "delay_ms": delay,
+                    "mode": "mock",
                 }
                 return
             # 3) 高级弱网（仅真实转发流量）：丢包已在 requestheaders 阶段完成 → 卡顿 → 延迟
@@ -1308,7 +1536,27 @@ class CaptureAddon:
                     flow.metadata["cap_break"] = "drop"
                 else:
                     _apply_resp_decision(flow, dec)
-            # 2) 记录上报：已上报 pending 的流量必须完成终报（否则残留「进行中」幽灵行），
+            # 2) 真实响应 + 改字段：真实响应已回来，就地覆盖指定字段（失败原样返回）
+            if flow.metadata.get("cap_mock_patch") and flow.response is not None:
+                await _apply_mock_patch(flow)
+            # 2.5) 改包 Mock「命中时暂停」：字段已套用，挂起让人看真实报文 / 改完放行（60s 自动放行）
+            #      复用断点通道与编辑器（详情页右侧就是响应报文，与「在右边展示真实报文」一致），
+            #      提 timeout=60 + kind=mock-confirm，前端据此把标题写成「Mock 确认」
+            mp = flow.metadata.get("cap_mock_patch") or {}
+            if mp.get("confirm") and not dropped and flow.response is not None:
+                dec = await _wait_break(
+                    "response", flow, timeout=60,
+                    extra={"kind": "mock-confirm",
+                           "note": "改包 Mock：真实响应已套用字段表，可改完再放行"})
+                if (dec.get("action") or "continue") == "drop":
+                    flow.response = http.Response.make(502, _DROP_TEXT, dict(_DROP_HEADERS))
+                    flow.metadata["cap_break"] = "drop"
+                else:
+                    _apply_resp_decision(flow, dec)
+                mock = flow.metadata.get("cap_mock") or {}
+                mock["patch_confirm"] = "manual"
+                flow.metadata["cap_mock"] = mock
+            # 3) 记录上报：已上报 pending 的流量必须完成终报（否则残留「进行中」幽灵行），
             #    其余按来源开关（关闭时仅不记录，转发不受影响）
             if not flow.metadata.get("cap_pending") and not _source_allowed(flow):
                 return

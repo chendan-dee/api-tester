@@ -39,3 +39,11 @@ mss>=10.0.0
 opencv-python>=4.8.0
 PyQt5>=5.15.9
 numpy>=1.24.0
+
+# 录制抓屏后端：dxcam 走 DXGI 桌面复制（GPU），1080p 可达 50+fps；
+# 缺失或运行异常时录制器自动回退 GDI（BitBlt，1080p 约 20fps）
+dxcam>=0.3.0
+
+# 录制编码：libx264 按 CRF 控画质（OpenCV 自带 avc1 码率固定 2-4Mbps，
+# 1080p 文字会糊）。优先用 PATH 里的 ffmpeg，没有则用本包自带的二进制兜底
+imageio-ffmpeg>=0.5.1

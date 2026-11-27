@@ -6,7 +6,7 @@
 - A2 记忆位置：拖动结束写入 panel_pos，下次启动恢复
 - A3 FPS 热更新：pending_fps 由 Web 写入，非录制态即时生效
 - B1 首帧不丢：writer 未就绪前用 deque 缓存前 N 帧，就绪后 flush
-- B2 抓屏后端：优先 d3dshot（DXGI Desktop Duplication），无则回退 mss
+- B2 抓屏后端：优先 dxcam(DXGI Desktop Duplication, GPU) / d3dshot，均无则回退 GDI
 - B3 边框置顶频率降为 2s；闪烁保持 500ms
 - C1 桌面 ClickOverlay：30Hz 立即绘制点击脉冲（不等下一视频帧）
 - C2 perf_counter 调度，落后过多时重置基线避免忙等
@@ -14,6 +14,8 @@
 - C4 窗口 rect 每 5 帧才查询一次
 - C6 窗口边界改用 DWM EXTENDED_FRAME_BOUNDS（排除隐形阴影），避免多录周边内容
 - C7 “网页区域”模式：UIA 检测浏览器 Document 边界，只录网页内容（排除标签栏/地址栏外壳）
+- C8 抓屏后端不含鼠标指针：逐帧补画系统光标，点击时叠加水波纹
+- C9 启动准备：抓屏/编码就绪后才从 00:00 计时，避免视频开头缺时间
 - C5 暂停/继续按钮，暂停时段不计入时长也不写帧
 - D1 stop 后 POST /api/record/notify-finished（配合 Web SSE 推送）
 - D2 优雅关闭：先 recorder.stop() 等 writer.release()，再退出，不用 os._exit
@@ -27,7 +29,9 @@ import json
 import time
 import math
 import argparse
+import shutil
 import threading
+import subprocess
 import urllib.request
 from datetime import datetime
 from collections import deque
@@ -60,11 +64,11 @@ def _ensure_heavy_deps():
 threading.Thread(target=_load_heavy_deps, daemon=True, name='heavy-deps').start()
 
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QToolButton,
-                             QVBoxLayout, QHBoxLayout, QLineEdit)
+                             QVBoxLayout, QHBoxLayout, QLineEdit, QFrame, QAbstractButton, QMenu)
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QEventLoop, QRectF, QSize
 from PyQt5.QtGui import (QFont, QCursor, QColor, QPainter, QPen, QImage, QPolygonF,
-                         QPixmap, QFontMetrics, QIcon)
+                         QPixmap, QFontMetrics, QIcon, QPalette)
 
 if getattr(sys, 'frozen', False):
     # 打包版：状态文件与主服务（exe 本体）共享，固定放在 exe 旁的 data/
@@ -100,6 +104,45 @@ def _write_status(**updates):
             os.replace(tmp, RECORD_STATUS_FILE)
         except Exception as e:
             print(f"[状态] 写入失败: {e}")
+
+
+def _script_mtime():
+    """本文件修改时间：Web 端唤醒常驻面板前比对，发现代码已更新就重启面板"""
+    try:
+        return os.path.getmtime(os.path.abspath(__file__))
+    except Exception:
+        return 0
+
+
+def _install_crash_guard():
+    """崩溃兑底：先落盘 recording=False，再退出
+
+    PyQt5 遇到槽函数里的未捕获异常会调 qFatal 直接 abort 进程，来不及写状态文件，
+    Web 就会永远停在“录制中”，而这种情况下 /api/record/stop 也找不到进程，
+    用户没有任何停止入口（曾因鼠标释放时 KeyError 复现）。
+    这里保证任何未捕获异常都先把状态复位，页面 2 秒内自动回到“就绪”。
+    """
+    try:
+        import faulthandler
+        faulthandler.enable()      # 原生层崩溃（qFatal / 段错误）也能打印调用栈
+    except Exception:
+        pass
+
+    def _hook(exc_type, exc, tb):
+        try:
+            _write_status(recording=False, paused=False, panel_visible=False,
+                          panel_pid=0, last_finished_at=time.time())
+        except Exception:
+            pass
+        import traceback
+        traceback.print_exception(exc_type, exc, tb)
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(1)                # 不留给 qFatal，进程立即消失让 Web 能察觉
+
+    sys.excepthook = _hook
 
 
 # ═══════════════════════════════════════════════════
@@ -705,14 +748,47 @@ class _GdiGrabber:
 
 
 class CaptureBackend:
-    """封装 mss / d3dshot 两种后端，对外统一接口"""
+    """封装 dxcam / d3dshot / GDI 三种后端，对外统一接口
+
+    GDI 的 BitBlt 在 1920x1080 下只能抓 ~20fps，直接决定了录制上限；
+    dxcam 走 DXGI 桌面复制（GPU 侧取帧），实测 1080p 可达 50+ fps，仅在
+    录制区域完全落在主显示器内时使用，副屏/越屏录制自动回退 GDI。
+    """
 
     def __init__(self):
         self._kind = None
         self._impl = None
+        self._gdi = None          # dxcam 模式下的兜底抓屏（区域越出主屏 / DXGI 异常时用）
+        self._frame_origin = (0, 0)   # dxcam 帧覆盖的屏幕原点
+        self._last_frame = None   # dxcam 最近一帧（静态画面下 grab 返回 None 时复用）
+        self._dx_err = 0          # dxcam 连续异常次数（超过阈值永久降级 GDI）
+        self._dx_cam = None       # 保留 DXCamera 引用（降级后 close 仍需释放它）
 
     def open(self):
         _ensure_heavy_deps()
+        # 1) dxcam：DXGI 桌面复制，GPU 抓帧，1080p 实测 50+fps
+        try:
+            import dxcam
+            cam = dxcam.create(output_color='BGR')
+            if cam is not None:
+                self._dx_cam = cam
+                self._impl = cam
+                self._kind = 'dxcam'
+                # 尽力预热首帧（≤0.5s）：create 成功即代表 DXGI 可用，
+                # 静态画面下 grab 会返回 None，不代表不可用
+                deadline = time.time() + 0.5
+                while time.time() < deadline:
+                    f = cam.grab()
+                    if f is not None:
+                        self._last_frame = f
+                        break
+                    time.sleep(0.01)
+                size = self._last_frame.shape[1::-1] if self._last_frame is not None else (0, 0)
+                print(f"[录制] 抓屏后端: dxcam (DXGI {size[0]}x{size[1]})")
+                return
+        except Exception as e:
+            print(f"[录制] dxcam 不可用，尝试其他后端: {e}")
+        # 2) d3dshot（旧方案，Python 3.14 下依赖 pillow 装不上，保留兼容）
         try:
             import d3dshot
             self._impl = d3dshot.create(capture_output="numpy", frame_buffer_size=8)
@@ -721,16 +797,51 @@ class CaptureBackend:
             return
         except Exception:
             pass
-        # 默认弃用 mss：其 BitBlt 固定带 CAPTUREBLT 标志，会在部分 Windows 上
-        # 干扰系统光标合成，造成录制过程中鼠标持续闪烁；GDI 直抓内容等价
+        # 3) 默认兜底：GDI（BitBlt SRCCOPY，无 CAPTUREBLT 光标闪烁问题）
         self._impl = _GdiGrabber()
         self._kind = 'gdi'
         print("[录制] 抓屏后端: GDI（SRCCOPY，无 CAPTUREBLT）")
+
+    def _crop(self, frame, x, y, w, h):
+        """从整屏帧裁出录制区域；必须 copy——dxcam 帧是内部缓冲，
+        直接切片会与后续抓帧共享内存，导致点击标记/标注被回写污染"""
+        H, W = frame.shape[:2]
+        if x < 0 or y < 0 or x + w > W or y + h > H:
+            return None
+        return np.array(frame[y:y + h, x:x + w], copy=True)
 
     def grab(self, rect):
         """rect = (left, top, width, height)，返回 BGR ndarray"""
         _ensure_heavy_deps()
         rx, ry, rw, rh = rect
+        if self._kind == 'dxcam':
+            frame = None
+            try:
+                # 必须用 grab 而不是 get_latest_frame：后者在静态画面下会阻塞等新帧，
+                # 直接拖垮录制节奏（实测帧率被拉到 5fps）
+                frame = self._impl.grab()
+                self._dx_err = 0
+            except Exception:
+                self._dx_err += 1
+                if self._dx_err > 20:
+                    print("[录制] dxcam 连续异常，永久降级 GDI")
+                    if self._gdi is None:
+                        self._gdi = _GdiGrabber()
+                    self._impl = self._gdi
+                    self._kind = 'gdi'
+            if frame is not None:
+                self._last_frame = frame
+            # 画面无变化时 DXGI 不出新帧：复用上一帧，由外层按目标 fps 重复写入
+            frame = self._last_frame
+            if frame is not None:
+                ox, oy = self._frame_origin
+                out = self._crop(frame, rx - ox, ry - oy, rw, rh)
+                if out is not None:
+                    return out
+            # 首次未拿到帧或区域越出主屏（副屏/跨屏窗口）：GDI 兜底
+            if self._gdi is None:
+                self._gdi = _GdiGrabber()
+            return self._gdi.grab((rx, ry, rw, rh))
         if self._kind == 'd3dshot':
             frame = self._impl.capture(region=(rx, ry, rx + rw, ry + rh))
             if frame is None:
@@ -739,14 +850,176 @@ class CaptureBackend:
         return self._impl.grab((rx, ry, rw, rh))
 
     def close(self):
-        try:
-            if self._kind == 'd3dshot' and self._impl:
+        # DXCamera 有 stop/release，_GdiGrabber 有 close，d3dshot 只有 stop
+        if self._dx_cam is not None:
+            try:
+                self._dx_cam.stop()
+                self._dx_cam.release()
+            except Exception:
+                pass
+        gdi = self._gdi if self._gdi is not None else (
+            self._impl if self._kind == 'gdi' else None)
+        if gdi is not None:
+            try:
+                gdi.close()
+            except Exception:
+                pass
+        if self._kind == 'd3dshot' and self._impl is not None:
+            try:
                 self._impl.stop()
-            elif self._impl:
-                self._impl.close()
+            except Exception:
+                pass
+        self._impl = None
+        self._gdi = None
+        self._dx_cam = None
+        self._last_frame = None
+        self._kind = None
+
+
+# ═══════════════════════════════════════════════════
+#  编码器（ffmpeg / libx264）
+# ═══════════════════════════════════════════════════
+
+# 画质档：crf 越小越清晰、体积越大。
+# preset 用 fast 而不是 veryfast：veryfast 关掉了 trellis 与 8x8dct、subme 只有 2，
+# 桌面文字这种“细笔画 + 大面积纯色”的画面会被量化成糊块（本机 1080p30 实测
+# fast/medium 都有 5x 以上编码余量，veryfast 的清晰度损失没有换来任何收益）
+QUALITY_PRESETS = {
+    # label 就是输出分辨率档（比 fps 直观：清晰度看的是像素，不是帧率）
+    # height=输出高度；720p/1080p 主动降采样，0=屏幕原生 1:1（不做无意义的上采样）
+    # CRF 阶梯 24/20/15（差 4~5 点）：旧版 21/17/15 只差 2 点，1080p 屏上
+    # “1080p”与“原生”码率几乎一样，用户反馈三档录出来看不出区别。
+    'standard': {'label': '720p', 'crf': 24, 'preset': 'fast', 'height': 720},
+    'hd':       {'label': '1080p', 'crf': 20, 'preset': 'fast', 'height': 1080},
+    'uhd':      {'label': '原生', 'crf': 15, 'preset': 'fast', 'height': 0},
+}
+QUALITY_DEFAULT = 'hd'
+
+
+def _snap_quality(value):
+    """把历史值/非法值归到三档；兼容中文标签、分辨率写法与 720/1080 这类旧值"""
+    key = str(value or '').strip().lower()
+    if key in QUALITY_PRESETS:
+        return key
+    alias = {'标准': 'standard', '高清': 'hd', '超清': 'uhd',
+             '720p': 'standard', '720': 'standard', '1280x720': 'standard',
+             '1080p': 'hd', '1080': 'hd', '1920x1080': 'hd',
+             '原生': 'uhd', 'native': 'uhd', 'source': 'uhd', 'max': 'uhd',
+             'high': 'hd', 'ultra': 'uhd', 'best': 'uhd'}
+    return alias.get(key, QUALITY_DEFAULT)
+
+
+def _output_size(src_w, src_h, quality):
+    """按画质档换算输出尺寸：目标高度不小于源高度时保持原生，绝不放大失真"""
+    th = QUALITY_PRESETS[_snap_quality(quality)].get('height') or 0
+    src_w, src_h = max(2, int(src_w)), max(2, int(src_h))
+    if th <= 0 or th >= src_h:
+        return src_w // 2 * 2, src_h // 2 * 2
+    ow = max(2, int(round(src_w * th / float(src_h))) // 2 * 2)
+    return ow, th // 2 * 2
+
+
+_FFMPEG_CACHE = None   # None=未探测；False=没有；str=可执行文件路径
+_FFMPEG_LOCK = threading.Lock()
+
+
+def _find_ffmpeg():
+    """定位 ffmpeg：PATH 优先，其次 imageio-ffmpeg 自带二进制（打包/离线环境兜底）"""
+    global _FFMPEG_CACHE
+    with _FFMPEG_LOCK:
+        if _FFMPEG_CACHE is not None:
+            return _FFMPEG_CACHE or None
+        exe = shutil.which('ffmpeg')
+        if not exe:
+            try:
+                import imageio_ffmpeg
+                exe = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                exe = None
+        _FFMPEG_CACHE = exe or False
+        return _FFMPEG_CACHE or None
+
+
+class FfmpegWriter:
+    """libx264 编码器，接口与 cv2.VideoWriter 对齐（isOpened / write / release）。
+
+    cv2.VideoWriter 无法指定码率：1920x1080 下 avc1 只有 2-4Mbps，桌面文字边缘
+    压缩成糊块。这里用 ffmpeg 子进程按 CRF 编码，同一分辨率下清晰度提升 2-4 倍。
+    找不到 ffmpeg 时由调用方回退 cv2（画质变差但不影响可用）。
+    """
+
+    def __init__(self, path, w, h, fps, crf, preset='fast'):
+        exe = _find_ffmpeg()
+        if not exe:
+            raise RuntimeError('未找到 ffmpeg')
+        gop = max(1, int(round(fps * 2)))   # 2 秒一关键帧：拖动进度条 / 网页预览响应更快
+        cmd = [
+            exe, '-hide_banner', '-loglevel', 'error', '-y',
+            '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{int(w)}x{int(h)}',
+            '-r', f'{fps:g}', '-i', '-',
+            # 色彩管线显式化：raw bgr24 没有色彩信息，swscale 默认按 BT.601 转 YUV
+            # 且不写元数据，而播放器对 >=720p 视频默认按 BT.709 解释 ->
+            # 红/蓝偏色、整体发灰，就是“录出来的画面和屏幕看到的不是一个颜色”。
+            # 这里统一按 BT.709 + tv 范围转换并写入元数据，播放端按同一套参数解码。
+            '-vf', 'scale=out_color_matrix=bt709:out_range=tv',
+            '-c:v', 'libx264', '-preset', preset, '-crf', str(crf),
+            '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-g', str(gop),
+            '-colorspace', 'bt709', '-color_primaries', 'bt709',
+            '-color_trc', 'bt709', '-color_range', 'tv',
+            '-movflags', '+faststart', path,
+        ]
+        flags = 0x08000000 if os.name == 'nt' else 0   # CREATE_NO_WINDOW：不弹黑框
+        # 偶发 WinError 5（杀毒/索引器刚创建目标目录时的瞬时占用）-> 短重试，
+        # 不能因为一次拒绝访问就回退到低码率编码器
+        last = None
+        for attempt in range(3):
+            try:
+                self._proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, creationflags=flags)
+                break
+            except OSError as e:
+                last = e
+                self._proc = None
+                time.sleep(0.25 * (attempt + 1))
+        if self._proc is None:
+            raise last or RuntimeError('ffmpeg 启动失败')
+        self._size = (int(w), int(h))
+        self._err = b''
+
+    def isOpened(self):
+        return self._proc is not None and self._proc.poll() is None
+
+    def write(self, frame):
+        if not self.isOpened():
+            return
+        try:
+            # 管道写入要求 C 连续 buffer；切片出来的帧不一定连续
+            self._proc.stdin.write(np.ascontiguousarray(frame).data)
+        except Exception as e:
+            print(f"[录制] 编码写入失败: {e}")
+            self._proc = None
+
+    def release(self):
+        p = self._proc
+        if p is None:
+            return
+        self._proc = None
+        try:
+            p.stdin.close()
         except Exception:
             pass
-        self._impl = None
+        try:
+            _, err = p.communicate(timeout=60)
+            self._err = err or b''
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        if self._err:
+            tail = self._err.decode('utf-8', 'ignore').strip().splitlines()[-3:]
+            print("[录制] ffmpeg: " + ' | '.join(tail))
 
 
 # ═══════════════════════════════════════════════════
@@ -754,10 +1027,19 @@ class CaptureBackend:
 # ═══════════════════════════════════════════════════
 
 class ScreenRecorder:
-    MAX_BUFFER_FRAMES = 30  # writer 未就绪时最多缓存 30 帧（≈2s @15fps）
+    MAX_BUFFER_FRAMES = 30  # writer 未就绪时最多缓存 30 帧（≈1.5s @20fps）
+    MAX_CATCHUP_FRAMES = 6  # 单次最多补 6 个重复帧（0.3s @20fps），防止卡顿后疯狂追赶
 
-    def __init__(self, fps, save_dir):
+    def __init__(self, fps, save_dir, quality=QUALITY_DEFAULT):
         self._fps = fps
+        # 画质档：决定编码 CRF（清晰度），与帧率/分辨率无关
+        self._quality = _snap_quality(quality)
+        # 实际落盘帧率：录制开始时按抓屏能力校准。成片时长由它决定，
+        # 若沿用「设定值」而抓屏达不到，成片会被加速播放（30fps 声明、18 帧/秒实写 -> 1.7 倍速）
+        self._effective_fps = fps
+        self._pause_accum = 0.0
+        self._pause_start = 0.0
+        self._timeline_t0 = 0.0   # 时间轴基准：writer 就绪后才开始计时（不含校准开销）
         self._save_dir = save_dir
         self._running = False
         self._paused = False
@@ -779,6 +1061,8 @@ class ScreenRecorder:
         self._ann_lock = threading.Lock()
         self._writer_ready = threading.Event()
         self._stopped_event = threading.Event()
+        # 抓帧时间轴真正开始后才置位：面板/网页必须等它再启动 00:00 计时
+        self._started_event = threading.Event()
         self._start_time = 0
 
     # ─── public ────────────────────────────
@@ -814,20 +1098,53 @@ class ScreenRecorder:
     def is_running(self):
         return self._running
 
+    def is_started(self):
+        """抓帧时间轴是否已建立；未建立前只算“准备中”，不能开始计时"""
+        return self._started_event.is_set()
+
+    def get_start_time(self):
+        """视频 00:00 对应的墙钟时间；准备中返回 0"""
+        return self._timeline_t0 if self._started_event.is_set() else 0.0
+
+    def wait_started(self, timeout=None):
+        """等待抓帧真正开始；CLI 写状态前用它对齐 start_time"""
+        return self._started_event.wait(timeout)
+
     def is_paused(self):
         return self._paused
 
     def pause(self):
         self._paused = True
+        self._pause_start = time.time()
 
     def resume(self):
+        if self._paused and self._pause_start:
+            self._pause_accum += time.time() - self._pause_start
         self._paused = False
+        self._pause_start = 0.0
+
+    def get_effective_fps(self):
+        """实际落盘帧率：录制中为校准后的值，空闲时为设定值"""
+        return self._effective_fps if self._running else self._fps
+
+    def _active_elapsed(self):
+        """有效录制时长（扣除暂停时段），成片帧数必须与它成正比"""
+        now = time.time()
+        base = self._timeline_t0 or self._start_time
+        paused = self._pause_accum + (now - self._pause_start if self._pause_start else 0)
+        return max(0.0, now - base - paused)
 
     def get_record_rect(self):
         return self._record_rect
 
     def set_fps(self, fps):
         self._fps = max(5, min(30, int(fps)))
+
+    def set_quality(self, quality):
+        self._quality = _snap_quality(quality)
+
+    def get_quality(self):
+        return self._quality
 
     def set_save_dir(self, d):
         self._save_dir = d
@@ -884,6 +1201,10 @@ class ScreenRecorder:
 
         self._running = True
         self._paused = False
+        self._effective_fps = self._fps
+        self._pause_accum = 0.0
+        self._pause_start = 0.0
+        self._timeline_t0 = 0.0
         self._start_time = time.time()
         self._start_ts = self._start_time
         self._frame_count = 0
@@ -891,25 +1212,42 @@ class ScreenRecorder:
         self._pending_frames.clear()
         self._writer_ready.clear()
         self._stopped_event.clear()
+        self._started_event.clear()
         with self._click_lock:
             self._clicks.clear()
 
-        threading.Thread(target=self._init_writer, args=(rw, rh), daemon=True).start()
-        threading.Thread(target=self._capture_loop, daemon=True).start()
+        # 校准抓屏能力 -> 建 writer -> 抓帧，三步必须串行：writer 的帧率要取校准后的真实值
+        threading.Thread(target=self._capture_loop, args=(rw, rh), daemon=True).start()
         return True
 
-    def _init_writer(self, rw, rh):
+    def _init_writer(self, src_w, src_h):
         _ensure_heavy_deps()
+        q = QUALITY_PRESETS[self._quality]
+        # 输出分辨率由画质档决定：720p/1080p 降采样，原生档与抓帧 1:1
+        rw, rh = _output_size(src_w, src_h, self._quality)
         self._writer_size = (rw, rh)
         self._writer = None
-        for codec in ('avc1', 'mp4v'):
-            fourcc = cv2.VideoWriter_fourcc(*codec)
-            w = cv2.VideoWriter(self._filepath, fourcc, self._fps, (rw, rh))
+        # 1) ffmpeg + libx264：可按 CRF 控质量，这是清晰度的关键
+        try:
+            w = FfmpegWriter(self._filepath, rw, rh, self._effective_fps,
+                             q['crf'], q['preset'])
             if w.isOpened():
                 self._writer = w
-                print(f"[录制] 编码器: {codec}")
-                break
-            w.release()
+                src = f"（源 {src_w}x{src_h}）" if (rw, rh) != (src_w, src_h) else ''
+                print(f"[录制] 编码器: libx264 CRF {q['crf']}（{q['label']}）"
+                      f" @ {self._effective_fps}fps {rw}x{rh}{src}")
+        except Exception as e:
+            print(f"[录制] ffmpeg 不可用，回退 OpenCV 编码: {e}")
+        # 2) 兜底：OpenCV（码率不可控，画质明显变差，但保证能录）
+        if self._writer is None:
+            for codec in ('avc1', 'mp4v'):
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                w = cv2.VideoWriter(self._filepath, fourcc, self._effective_fps, (rw, rh))
+                if w.isOpened():
+                    self._writer = w
+                    print(f"[录制] 编码器: {codec} @ {self._effective_fps}fps（低码率，画质受限）")
+                    break
+                w.release()
         self._writer_ready.set()
 
     def _clamp_to_screen(self, x, y, w, h):
@@ -930,19 +1268,101 @@ class ScreenRecorder:
         scale = min(cw / fw, ch / fh)
         nw = max(2, int(fw * scale) // 2 * 2)
         nh = max(2, int(fh * scale) // 2 * 2)
-        resized = cv2.resize(frame, (nw, nh))
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
         canvas = np.zeros((ch, cw, 3), dtype=np.uint8)
         x0 = (cw - nw) // 2
         y0 = (ch - nh) // 2
         canvas[y0:y0 + nh, x0:x0 + nw] = resized
         return canvas
 
-    def _capture_loop(self):
+    def _calibrate_fps(self):
+        """实测抓屏耗时，得出当前屏幕尺寸下真正能达到的帧率上限。
+
+        GDI(BitBlt) 在 1920x1080 下只能抓 ~20fps，若硬按 30fps 声明写文件，
+        成片会被加速播放且与 20fps 档产物几乎相同——档位差异必须落在真实帧率上。
+        """
+        rect = self._record_rect
+        samples = []
+        for _ in range(3):
+            try:
+                t = time.perf_counter()
+                if self._backend.grab(rect) is not None:
+                    samples.append(time.perf_counter() - t)
+            except Exception:
+                break
+        if not samples:
+            return self._fps
+        median = sorted(samples)[len(samples) // 2]
+        # 留 30% 余量：不只是抓屏，每帧还要叠加点击标记/标注绘制 + libx264 编码
+        # （实测 1080p 仅按抓屏耗时估算 30fps，真实吞吐只有 ~27fps，成片会轻微加速）
+        cap = int(1.0 / max(median * 1.30, 1e-6))
+        return max(5, min(self._fps, cap))
+
+    def _emit_frame(self, frame):
+        """按输出分辨率落一帧：尺寸不符时等比缩放（720p/1080p 档 + 窗口缩放兜底）"""
+        ws_w, ws_h = getattr(self, '_writer_size', (0, 0))
+        if ws_w and (frame.shape[1] != ws_w or frame.shape[0] != ws_h):
+            frame = self._fit_canvas(frame, ws_w, ws_h)
+        self._writer.write(frame)
+        self._frame_count += 1
+
+    def _write_frame(self, frame):
+        """按时间轴写帧：抓帧偶发落后时补重复帧，保证成片时长 == 真实录制时长"""
+        if not (self._writer_ready.is_set() and self._writer and self._writer.isOpened()):
+            self._pending_frames.append(frame)
+            return
+        while self._pending_frames:
+            self._emit_frame(self._pending_frames.popleft())
+        self._emit_frame(frame)
+        gap = int(self._active_elapsed() * self._effective_fps) - self._frame_count
+        # 卡顿/抓帧阻塞导致的欠帧用重复帧补齐（重复帧编码几乎不增体积）；
+        # 单帧最多补 MAX_CATCHUP_FRAMES，剩余下一帧继续追，避免长时间阻塞和成片变短
+        for _ in range(min(max(gap, 0), self.MAX_CATCHUP_FRAMES)):
+            self._emit_frame(frame)
+
+    def _capture_loop(self, default_w, default_h):
         self._backend = CaptureBackend()
         self._backend.open()
+        self._effective_fps = self._calibrate_fps()
+        if self._effective_fps != self._fps:
+            print(f"[录制] 抓屏能力上限 {self._effective_fps}fps（设定 {self._fps}fps），按实际值落盘保证时长准确")
+        # 预热：dxcam 首次取帧可能阻塞等新帧（静止画面下可达 1s），
+        # 先拿到首帧再定时间轴基准，避免把等待期算进片长
+        warm = None
+        try:
+            warm = self._backend.grab(self._record_rect)
+        except Exception:
+            pass
+        # 编码尺寸必须等于真实抓帧尺寸经画质档换算后的值：若用录制矩形声明尺寸而
+        # 实际抓到的帧尺寸不同（窗口出屏被 clamp / 缩放），整片会被等比缩小，1080p 也会被缩糊
+        if warm is not None and warm.size:
+            src_w, src_h = int(warm.shape[1]), int(warm.shape[0])
+        else:
+            src_w, src_h = default_w, default_h
+        init_w, init_h = _output_size(src_w, src_h, self._quality)
+        self._writer_size = (init_w, init_h)
+        # 编码器初始化需 ~0.5-1s：仍后台建，但时间轴要等它就绪。
+        # 若先起时间轴，这 1 秒的帧只能进 pending（上限 30 帧，@30fps 刚好 1 秒），
+        # 装不下就从左侧丢掉最早的帧，再被补帧逻辑用新画面填满 ——
+        # 表现就是“计时从 00:00 走，但成片开头 1 秒没有画面”。等待期面板显示“准备中”。
+        threading.Thread(target=self._init_writer, args=(src_w, src_h), daemon=True).start()
+        self._writer_ready.wait(timeout=10.0)
+        # 时间轴第一帧必须现抓：warm 是 init 之前的画面，已经过期
+        first = None
+        try:
+            first = self._backend.grab(self._record_rect)
+        except Exception:
+            pass
+        if first is None or not first.size:
+            first = warm
+        self._timeline_t0 = time.time()
+        if first is not None and first.size:
+            self._write_frame(first)
+        # 首帧已进时间轴，才开始对外计时：面板/网页的 00:00 与成片第一帧对齐
+        self._started_event.set()
 
         rx, ry, rw, rh = self._record_rect
-        interval = 1.0 / self._fps
+        interval = 1.0 / self._effective_fps
         next_t = time.perf_counter()
         frame_idx = 0
 
@@ -983,20 +1403,15 @@ class ScreenRecorder:
                     continue
                 self._draw_clicks(frame, gx, gy)
                 self._draw_annotations(frame, gx, gy)
+                # 抓屏 API 本身不包含光标：最后补画，保证“鼠标 + 水波纹”一起出现
+                self._draw_cursor(frame, gx, gy)
                 ws_w, ws_h = getattr(self, '_writer_size', (gw, gh))
                 if frame.shape[1] != ws_w or frame.shape[0] != ws_h:
                     # 等比缩放+黑边居中：窗口移动/缩放/最大化都不变形
                     frame = self._fit_canvas(frame, ws_w, ws_h)
 
-                # B1: writer 未就绪时缓存前若干帧
-                if self._writer_ready.is_set() and self._writer and self._writer.isOpened():
-                    while self._pending_frames:
-                        self._writer.write(self._pending_frames.popleft())
-                        self._frame_count += 1
-                    self._writer.write(frame)
-                    self._frame_count += 1
-                else:
-                    self._pending_frames.append(frame)
+                # B1: writer 未就绪时缓存前若干帧；写帧时按时间轴补帧，保证成片时长准确
+                self._write_frame(frame)
 
                 frame_idx += 1
             except Exception as e:
@@ -1007,8 +1422,7 @@ class ScreenRecorder:
         if self._writer:
             while self._pending_frames:
                 try:
-                    self._writer.write(self._pending_frames.popleft())
-                    self._frame_count += 1
+                    self._emit_frame(self._pending_frames.popleft())
                 except Exception:
                     break
             self._writer.release()
@@ -1016,8 +1430,10 @@ class ScreenRecorder:
         if self._backend:
             self._backend.close()
             self._backend = None
-        elapsed = time.time() - self._start_time
-        print(f"[录制] 停止: {self._frame_count} 帧, {elapsed:.1f} 秒 -> {self._filepath}")
+        elapsed = time.time() - (self._timeline_t0 or self._start_time)
+        ws = getattr(self, '_writer_size', (0, 0))
+        print(f"[录制] 停止: {self._frame_count} 帧 @ {self._effective_fps}fps, "
+              f"{elapsed:.1f} 秒, 输出 {ws[0]}x{ws[1]} -> {self._filepath}")
         self._stopped_event.set()
 
     def _draw_annotations(self, frame, ox, oy):
@@ -1038,47 +1454,349 @@ class ScreenRecorder:
             print(f"[录制] 标注渲染错误: {e}")
 
     def _draw_clicks(self, frame, rx, ry):
-        """C3: 从左侧 popleft 过期点击，遍历不拷贝"""
+        """C3: 从左侧 popleft 过期点击，遍历不拷贝
+
+        蓝白水波纹与桌面 ClickOverlay 使用同一套 _click_ripples，保证预览即成品。"""
         _ensure_heavy_deps()
         now = time.time()
         H, W = frame.shape[:2]
+        edge_bgr = CLICK_EDGE_RGB[::-1]
+        ring_bgr = CLICK_RING_RGB[::-1]
+        core_bgr = CLICK_CORE_RGB[::-1]
         with self._click_lock:
-            while self._clicks and now - self._clicks[0]['t'] >= 0.8:
+            while self._clicks and now - self._clicks[0]['t'] >= CLICK_LIFE:
                 self._clicks.popleft()
             for c in self._clicks:
                 age = now - c['t']
-                if age < 0 or age >= 0.8:
+                if age < 0 or age >= CLICK_LIFE:
                     continue
-                progress = age / 0.8
+                progress = age / CLICK_LIFE
                 lx, ly = c['x'] - rx, c['y'] - ry
                 if not (0 <= lx < W and 0 <= ly < H):
                     continue
-                max_r = 35
-                # 淡黄色点击标记（BGR: 102,224,255 = #FFE066）+ 深褐描边保证浅/深背景都可见
-                for ring_idx in range(2):
-                    p2 = min(1.0, progress + ring_idx * 0.2)
-                    alpha = 1 - progress - ring_idx * 0.2
-                    r = int(max_r * p2)
-                    if r > 0 and alpha > 0:
-                        cv2.circle(frame, (lx, ly), r + 2, (14, 64, 146), 1)   # 描边
-                        cv2.circle(frame, (lx, ly), r, (102, 224, 255), 2)     # 淡黄环
-                cv2.circle(frame, (lx, ly), 5, (14, 64, 146), 1)               # 点描边
-                cv2.circle(frame, (lx, ly), 4, (102, 224, 255), -1)            # 淡黄点
+                ripples = _click_ripples(progress)
+                max_r = max(r for r, _ in ripples)
+                pad = int(max_r + 5)
+                x0, x1 = max(0, lx - pad), min(W, lx + pad + 1)
+                y0, y1 = max(0, ly - pad), min(H, ly + pad + 1)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                roi = frame[y0:y1, x0:x1]
+                cx, cy = lx - x0, ly - y0
+
+                # 双层细环：外环像回声一样更淡，整体半径控制在 25px 内
+                for rr, fade in ripples:
+                    layer = roi.copy()
+                    cv2.circle(layer, (cx, cy), int(round(rr + 0.8)),
+                               edge_bgr, 1, cv2.LINE_AA)
+                    cv2.circle(layer, (cx, cy), int(round(rr)),
+                               ring_bgr, 2, cv2.LINE_AA)
+                    alpha = max(0.0, min(1.0, fade))
+                    if alpha > 0:
+                        frame[y0:y1, x0:x1] = cv2.addWeighted(
+                            layer, alpha, roi, 1 - alpha, 0)
+
+                # 中心只留一个小白点标定落点，不做放射线或大圆点
+                core_fade = (1 - progress) ** 2.2
+                if core_fade > 0:
+                    layer = roi.copy()
+                    cv2.circle(layer, (cx, cy), 2, edge_bgr, 1, cv2.LINE_AA)
+                    cv2.circle(layer, (cx, cy), 1, core_bgr, -1, cv2.LINE_AA)
+                    frame[y0:y1, x0:x1] = cv2.addWeighted(
+                        layer, core_fade, roi, 1 - core_fade, 0)
+
+    def _draw_cursor(self, frame, rx, ry):
+        """把系统光标画进录制帧：抓屏后端不含指针，录出来会“只见波纹不见鼠标”。
+
+        光标按屏幕物理坐标 + 热点对齐，与点击水波纹同时叠加，
+        突出一次完整点击；命中本工具面板/工具条时跳过，避免录出悬空指针。
+        """
+        cur = _cursor_state()
+        if not cur:
+            return
+        sx, sy, bgr, alpha, hx, hy = cur
+        if _point_in_own_window(sx, sy):
+            return
+        H, W = frame.shape[:2]
+        ch, cw = bgr.shape[:2]
+        x, y = sx - hx - rx, sy - hy - ry
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + cw), min(H, y + ch)
+        if x1 <= x0 or y1 <= y0:
+            return
+        ix0, iy0 = x0 - x, y0 - y
+        ix1, iy1 = ix0 + (x1 - x0), iy0 + (y1 - y0)
+        src = bgr[iy0:iy1, ix0:ix1].astype(np.float32)
+        a = alpha[iy0:iy1, ix0:ix1, None]
+        roi = frame[y0:y1, x0:x1].astype(np.float32)
+        frame[y0:y1, x0:x1] = np.clip(
+            src * a + roi * (1.0 - a), 0, 255).astype(np.uint8)
 
 
 # ═══════════════════════════════════════════════════
 #  鼠标监听
 # ═══════════════════════════════════════════════════
 
+# 点击标记：蓝白小水波纹（与视频帧绘制共用，预览与成片一致）
+CLICK_LIFE = 0.8
+CLICK_RING_RGB = (125, 211, 252)   # #7DD3FC 天蓝
+CLICK_EDGE_RGB = (15, 23, 42)      # #0F172A 深蓝灰描边
+CLICK_CORE_RGB = (248, 250, 252)   # #F8FAFC 中心白点
+CLICK_MAX_R = 20.0                 # 主环最大半径，比旧版 35 更克制
+
+
+def _click_ripples(progress):
+    """返回 [(半径, 透明度), ...]：内环实、外环淡，像一圈小水波。"""
+    p = max(0.0, min(1.0, progress))
+    ease = 1 - (1 - p) ** 2.0
+    r = 5.0 + (CLICK_MAX_R - 5.0) * ease
+    fade = (1 - p) ** 1.35
+    return [(r, fade), (r + 4.5, fade * 0.45)]
+
+
+def _point_in_own_window(x, y, pid=None):
+    """鼠标落点是否命中本录制工具自己的窗口（面板/工具条/菜单/输入框/边框）。
+
+    WindowFromPoint 是快路径；Qt 弹出菜单打开时会拿走鼠标捕获，
+    WindowFromPoint 可能报出下层应用，因此再用“可见、非穿透的自身顶层窗口矩形”兜底。
+    """
+    pid = int(os.getpid() if pid is None else pid)
+    try:
+        import win32gui
+        import win32con
+        import win32process
+        x, y = int(x), int(y)
+        hwnd = win32gui.WindowFromPoint((x, y))
+        if hwnd:
+            root = win32gui.GetAncestor(hwnd, 2)  # GA_ROOT
+            if root:
+                hwnd = root
+            _, win_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if int(win_pid) == pid:
+                return True
+
+        hits = []
+
+        def _enum(h, _):
+            if not win32gui.IsWindowVisible(h) or win32gui.IsIconic(h):
+                return True
+            ex = win32gui.GetWindowLong(h, win32con.GWL_EXSTYLE)
+            if ex & win32con.WS_EX_TRANSPARENT:
+                return True           # 点击层/手模式标注层是故意穿透的
+            _, wp = win32process.GetWindowThreadProcessId(h)
+            if int(wp) != pid:
+                return True
+            l, t, r, b = win32gui.GetWindowRect(h)
+            if l <= x < r and t <= y < b:
+                hits.append(h)
+                return False
+            return True
+
+        win32gui.EnumWindows(_enum, None)
+        return bool(hits)
+    except Exception:
+        return False
+
+
+# 系统光标读取：抓屏 API 不包含指针，录制时按帧叠加真实光标位图
+_CURSOR_API = None
+_CURSOR_CACHE = {}
+_CURSOR_CACHE_LOCK = threading.Lock()
+_CURSOR_CACHE_MAX = 24
+
+
+def _cursor_api():
+    """惰性初始化光标读取所需的 Win32 结构与函数（不增加启动期依赖）。"""
+    global _CURSOR_API
+    if _CURSOR_API is not None:
+        return _CURSOR_API
+    import ctypes
+    from ctypes import wintypes
+
+    class CURSORINFO(ctypes.Structure):
+        _fields_ = [('cbSize', wintypes.DWORD), ('flags', wintypes.DWORD),
+                    ('hCursor', wintypes.HANDLE), ('ptScreenPos', wintypes.POINT)]
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [('fIcon', wintypes.BOOL), ('xHotspot', wintypes.DWORD),
+                    ('yHotspot', wintypes.DWORD), ('hbmMask', wintypes.HBITMAP),
+                    ('hbmColor', wintypes.HBITMAP)]
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [('bmType', wintypes.LONG), ('bmWidth', wintypes.LONG),
+                    ('bmHeight', wintypes.LONG), ('bmWidthBytes', wintypes.LONG),
+                    ('bmPlanes', wintypes.WORD), ('bmBitsPixel', wintypes.WORD),
+                    ('bmBits', wintypes.LPVOID)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG),
+                    ('biHeight', wintypes.LONG), ('biPlanes', wintypes.WORD),
+                    ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
+                    ('biSizeImage', wintypes.DWORD),
+                    ('biXPelsPerMeter', wintypes.LONG),
+                    ('biYPelsPerMeter', wintypes.LONG),
+                    ('biClrUsed', wintypes.DWORD),
+                    ('biClrImportant', wintypes.DWORD)]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [('bmiHeader', BITMAPINFOHEADER),
+                    ('bmiColors', wintypes.DWORD * 3)]
+
+    u = ctypes.windll.user32
+    g = ctypes.windll.gdi32
+    u.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+    u.GetCursorInfo.restype = wintypes.BOOL
+    u.GetIconInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ICONINFO)]
+    u.GetIconInfo.restype = wintypes.BOOL
+    u.GetDC.argtypes = [wintypes.HWND]
+    u.GetDC.restype = wintypes.HDC
+    u.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    u.ReleaseDC.restype = ctypes.c_int
+    g.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+    g.GetObjectW.restype = ctypes.c_int
+    g.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT,
+                            wintypes.UINT, ctypes.c_void_p,
+                            ctypes.POINTER(BITMAPINFO), wintypes.UINT]
+    g.GetDIBits.restype = ctypes.c_int
+    g.DeleteObject.argtypes = [wintypes.HANDLE]
+    g.DeleteObject.restype = wintypes.BOOL
+    _CURSOR_API = {
+        'ctypes': ctypes, 'wintypes': wintypes, 'u': u, 'g': g,
+        'CURSORINFO': CURSORINFO, 'ICONINFO': ICONINFO, 'BITMAP': BITMAP,
+        'BITMAPINFO': BITMAPINFO, 'BITMAPINFOHEADER': BITMAPINFOHEADER,
+    }
+    return _CURSOR_API
+
+
+def _read_dib(hbm, w, h, bits, api):
+    """读取 GDI 位图像素：32bpp 返回 BGRA，1bpp 返回布尔掩码。"""
+    ctypes = api['ctypes']
+    bi = api['BITMAPINFO']()
+    bi.bmiHeader.biSize = ctypes.sizeof(api['BITMAPINFOHEADER'])
+    bi.bmiHeader.biWidth = w
+    bi.bmiHeader.biHeight = -h          # 负高度 = 自上而下，避免再翻转
+    bi.bmiHeader.biPlanes = 1
+    bi.bmiHeader.biBitCount = bits
+    bi.bmiHeader.biCompression = 0      # BI_RGB
+    stride = ((w * bits + 31) // 32) * 4
+    buf = (ctypes.c_ubyte * (stride * h))()
+    hdc = api['u'].GetDC(0)
+    if not hdc:
+        return None
+    try:
+        rows = api['g'].GetDIBits(hdc, hbm, 0, h, buf,
+                                  ctypes.byref(bi), 0)
+    finally:
+        api['u'].ReleaseDC(0, hdc)
+    if not rows:
+        return None
+    arr = np.frombuffer(bytes(buf), dtype=np.uint8).reshape(h, stride)
+    if bits == 32:
+        return arr[:, :w * 4].reshape(h, w, 4)
+    return np.unpackbits(arr, axis=1)[:, :w].astype(bool)
+
+
+def _read_cursor_bitmap(hcursor, api):
+    """提取当前光标位图：返回 (BGR, alpha, hotspot_x, hotspot_y)。
+
+    彩色光标优先用自带 alpha；老式单色光标（hbmColor 为空）
+    用 AND/XOR 双掩码合成，否则会得到一块全黑方块。
+    """
+    ctypes = api['ctypes']
+    ii = api['ICONINFO']()
+    if not api['u'].GetIconInfo(hcursor, ctypes.byref(ii)):
+        return None
+    try:
+        bm = api['BITMAP']()
+        src = ii.hbmColor or ii.hbmMask
+        if not src or not api['g'].GetObjectW(
+                src, ctypes.sizeof(api['BITMAP']), ctypes.byref(bm)):
+            return None
+        w, h = int(bm.bmWidth), int(bm.bmHeight)
+        if w <= 0 or h <= 0:
+            return None
+        if ii.hbmColor:
+            color = _read_dib(ii.hbmColor, w, h, 32, api)
+            if color is None:
+                return None
+            bgr = color[:, :, :3].copy()
+            alpha = color[:, :, 3].astype(np.float32) / 255.0
+            if alpha.max() <= 0 and ii.hbmMask:
+                mask = _read_dib(ii.hbmMask, w, h, 1, api)
+                if mask is not None:
+                    alpha = (~mask).astype(np.float32)
+        else:
+            raw = _read_dib(ii.hbmMask, w, h, 1, api)
+            if raw is None:
+                return None
+            hh = h // 2
+            if hh <= 0 or raw.shape[0] < hh * 2:
+                return None
+            and_mask = raw[:hh]
+            xor_mask = raw[hh:hh * 2]
+            bgr = np.where(xor_mask[:, :, None], 255, 0).astype(np.uint8)
+            bgr = np.repeat(bgr, 3, axis=2)
+            alpha = (~and_mask).astype(np.float32)
+        return bgr, alpha, int(ii.xHotspot), int(ii.yHotspot)
+    finally:
+        for hbm in (ii.hbmColor, ii.hbmMask):
+            if hbm:
+                api['g'].DeleteObject(hbm)
+
+
+def _cursor_bitmap(hcursor):
+    """按光标句柄缓存位图：同一形状每帧不重复做 GetDIBits。"""
+    try:
+        key = int(hcursor or 0)
+    except Exception:
+        return None
+    if key <= 0:
+        return None
+    now = time.time()
+    with _CURSOR_CACHE_LOCK:
+        ent = _CURSOR_CACHE.get(key)
+        if ent and now - ent[0] < 10.0:
+            return ent[1:]
+    got = _read_cursor_bitmap(key, _cursor_api())
+    if got:
+        with _CURSOR_CACHE_LOCK:
+            _CURSOR_CACHE[key] = (now,) + got
+            while len(_CURSOR_CACHE) > _CURSOR_CACHE_MAX:
+                _CURSOR_CACHE.pop(next(iter(_CURSOR_CACHE)))
+    return got
+
+
+def _cursor_state():
+    """当前可见光标：(屏幕 x, 屏幕 y, BGR, alpha, 热点 x, 热点 y)。"""
+    if sys.platform != 'win32':
+        return None
+    try:
+        api = _cursor_api()
+        ci = api['CURSORINFO']()
+        ci.cbSize = api['ctypes'].sizeof(api['CURSORINFO'])
+        if not api['u'].GetCursorInfo(api['ctypes'].byref(ci)):
+            return None
+        if not (int(ci.flags) & 0x00000001) or not ci.hCursor:   # CURSOR_SHOWING
+            return None
+        bmp = _cursor_bitmap(ci.hCursor)
+        if not bmp:
+            return None
+        return (int(ci.ptScreenPos.x), int(ci.ptScreenPos.y)) + bmp
+    except Exception:
+        return None
+
+
 class MouseClickListener:
     """点击监听：轮询 GetAsyncKeyState 边沿检测（替代 pynput 全局钩子）。
 
     低级鼠标钩子（WH_MOUSE_LL）会让每个鼠标事件都经过回调线程，
     会造成录制中系统光标闪烁；轮询方案零钩子、零系统影响，
-    坐标取按压瞬间的 GetCursorPos（物理像素，与抓帧坐标一致）。"""
+    坐标取按压瞬间的 GetCursorPos（物理像素，与抓帧坐标一致）。
+    点击本工具自己的面板/工具条时跳过，不计数也不画标记。"""
 
-    def __init__(self, on_click):
+    def __init__(self, on_click, skip_own_process=True):
         self._on_click = on_click
+        self._skip_own_process = bool(skip_own_process)
         self._stop_evt = threading.Event()
         self._thread = None
 
@@ -1092,6 +1810,12 @@ class MouseClickListener:
         self._stop_evt.set()
         self._thread = None
 
+    def _handle_press(self, x, y):
+        """命中本工具自己的 UI 时不计数：面板/标注条/文字框/迷你条都算。"""
+        if self._skip_own_process and _point_in_own_window(x, y):
+            return
+        self._on_click(x, y)
+
     def _loop(self):
         try:
             import win32api
@@ -1104,7 +1828,7 @@ class MouseClickListener:
             down_r = bool(win32api.GetAsyncKeyState(win32con.VK_RBUTTON) & 0x8000)
             if (down_l and not prev_l) or (down_r and not prev_r):
                 try:
-                    self._on_click(*win32api.GetCursorPos())
+                    self._handle_press(*win32api.GetCursorPos())
                 except Exception:
                     pass
             prev_l, prev_r = down_l, down_r
@@ -1166,9 +1890,9 @@ class ClickOverlay(QWidget):
     def _tick(self):
         if not (self._recorder.is_running() and not self._recorder.is_paused()):
             return
-        # 仅当 0.8s 生命窗口内还有活跃点击脉冲时才重绘（含收尾清屏帧）：
+        # 仅当脉冲生命窗口内还有活跃点击时才重绘（含收尾清屏帧）：
         # 平时零重绘，避免全屏 layered 窗口 30Hz 空转干扰系统光标合成（鼠标闪烁）
-        has_clicks = bool(self._recorder.get_clicks_snapshot(window=0.8))
+        has_clicks = bool(self._recorder.get_clicks_snapshot(window=CLICK_LIFE))
         if has_clicks or self._was_active:
             self.update()
         self._was_active = has_clicks
@@ -1176,32 +1900,33 @@ class ClickOverlay(QWidget):
     def paintEvent(self, event):
         if not self._enabled:
             return
-        clicks = self._recorder.get_clicks_snapshot(window=0.8)
+        clicks = self._recorder.get_clicks_snapshot(window=CLICK_LIFE)
         if not clicks:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         ox, oy = self.geometry().x(), self.geometry().y()
         for (sx, sy, age) in clicks:
-            progress = age / 0.8
+            progress = age / CLICK_LIFE
             if progress >= 1.0:
                 continue
             lx, ly = sx - ox, sy - oy
-            max_r = 35
-            base_alpha = int(220 * (1 - progress))
-            # 淡黄色（#FFE066）+ 深褐描边，浅/深背景都清晰
-            for ring_idx in range(2):
-                p2 = min(1.0, progress + ring_idx * 0.2)
-                r = int(max_r * p2)
-                a = max(0, base_alpha - ring_idx * 60)
-                if r > 0 and a > 0:
-                    painter.setPen(QPen(QColor(146, 64, 14, a), 1))          # 描边
-                    painter.drawEllipse(QPoint(lx, ly), r + 2, r + 2)
-                    painter.setPen(QPen(QColor(255, 224, 102, a), 2))         # 淡黄环
-                    painter.drawEllipse(QPoint(lx, ly), r, r)
-            painter.setPen(QPen(QColor(146, 64, 14, min(255, base_alpha + 30)), 1))
-            painter.setBrush(QColor(255, 224, 102, min(255, base_alpha + 30)))
-            painter.drawEllipse(QPoint(lx, ly), 4, 4)
+            # 双层小水波：外环更淡，与视频帧 _draw_clicks 共用 _click_ripples
+            painter.setBrush(Qt.NoBrush)
+            for r, fade in _click_ripples(progress):
+                edge = QColor(*CLICK_EDGE_RGB, max(0, min(255, int(190 * fade))))
+                ring = QColor(*CLICK_RING_RGB, max(0, min(255, int(235 * fade))))
+                painter.setPen(QPen(edge, 1.6))
+                painter.drawEllipse(QPointF(lx, ly), r + 0.8, r + 0.8)
+                painter.setPen(QPen(ring, 1.7))
+                painter.drawEllipse(QPointF(lx, ly), r, r)
+
+            # 中心只留一个小白点标定落点
+            core_fade = (1 - progress) ** 2.2
+            a_core = max(0, min(255, int(255 * core_fade)))
+            painter.setPen(QPen(QColor(*CLICK_EDGE_RGB, a_core), 1.2))
+            painter.setBrush(QColor(*CLICK_CORE_RGB, a_core))
+            painter.drawEllipse(QPointF(lx, ly), 1.8, 1.8)
             painter.setBrush(Qt.NoBrush)
             painter.setPen(Qt.NoPen)
 
@@ -1210,15 +1935,43 @@ class ClickOverlay(QWidget):
 #  录制标注（画笔 / 箭头 / 框选 / 荧光 / 文字）
 # ═══════════════════════════════════════════════════
 
-# 标注调色板：高饱和高对比，浅色/深色背景上都清晰可辨
+# 标注调色板：10 色，覆盖三类底——
+#   亮色（红橙黄绿青蓝紫玫红）用于深色截图/彩色画面
+#   白色给全黑底（全屏录制桌面暗色主题、终端、视频）
+#   黑色给白底页面（后台管理系统、文档），否则白字完全看不见
 ANN_COLORS = {
     '红色': (255, 59, 48),
+    '橙色': (255, 149, 0),
     '黄色': (255, 214, 10),
-    '蓝色': (10, 132, 255),
     '绿色': (52, 199, 89),
+    '青色': (34, 211, 238),
+    '蓝色': (10, 132, 255),
+    '紫色': (191, 90, 242),
+    '玫红': (255, 45, 146),
+    '白色': (255, 255, 255),
+    '黑色': (17, 24, 39),
 }
 ANN_WIDTHS = {'细': 3, '中': 5, '粗': 8}
+# 字号直接给像素档（不再分小/中/大）：默认取最小号 16px，按录制分辨率与内容密度自选
+ANN_TEXT_SIZES = (16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64)
+ANN_TEXT_DEFAULT = ANN_TEXT_SIZES[0]
 ANN_MARKER_FACTOR = 4       # 荧光笔宽度 = 细/中/粗 ×4（半透明粗线）
+
+
+def _lum(rgb):
+    """感知亮度（0~255）：用来判断标注色该配深底还是浅底"""
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _readable_on_dark(r, g, b, min_lum=160):
+    """把标注色换成深色底上看得清的版本：亮度不够时向白色混合（保留色相）。
+    紫色/黄色/蓝色这类浅色裸字压在白页面上几乎看不清，输入期间必须衬底。"""
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if lum >= min_lum:
+        return r, g, b
+    k = (min_lum - lum) / (255.0 - lum + 1e-6)
+    return (int(r + (255 - r) * k), int(g + (255 - g) * k), int(b + (255 - b) * k))
 
 
 def _tool_icon(key, color):
@@ -1260,8 +2013,13 @@ def _tool_icon(key, color):
         p.setBrush(c)
         p.drawPolygon(QPolygonF([
             QPointF(14.4, 3.6), QPointF(13.6, 8.2), QPointF(9.8, 4.4)]))
-    elif key == 'rect':
-        p.setPen(QPen(c, 1.8))
+    elif key in ('rect', 'dashrect'):
+        if key == 'dashrect':
+            pen = QPen(c, 1.8, Qt.DashLine)
+            pen.setDashPattern([2.0, 1.4])
+        else:
+            pen = QPen(c, 1.8)
+        p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(3.3, 5.3, 11.4, 7.4), 1.8, 1.8)
     elif key == 'ellipse':
@@ -1329,7 +2087,13 @@ def _paint_one_annotation(painter, a, ox, oy):
     elif t in ('rect', 'ellipse'):
         x1, y1 = a['x1'] - ox, a['y1'] - oy
         x2, y2 = a['x2'] - ox, a['y2'] - oy
-        painter.setPen(QPen(col, w))
+        pen = QPen(col, w)
+        if a.get('dash'):
+            # 虚线框：段长/间隔按线宽等比，细线时不至于糊成实线，粗线时也不过分稀疏
+            pen.setStyle(Qt.DashLine)
+            pen.setDashPattern([2.2, 1.4])
+            pen.setCapStyle(Qt.FlatCap)
+        painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         rect = QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
         if t == 'rect':
@@ -1338,14 +2102,17 @@ def _paint_one_annotation(painter, a, ox, oy):
             painter.drawEllipse(rect)
     elif t == 'text':
         size = a.get('size', 22)
-        painter.setFont(QFont('Microsoft YaHei', size, QFont.Bold))
+        # 用像素字号而非磅值：与输入框 font-size:22px 完全同尺寸，保证“预览=成片”
+        f = QFont('Microsoft YaHei')
+        f.setPixelSize(int(size))
+        f.setBold(True)
+        f.setHintingPreference(QFont.PreferFullHinting)   # 小字号不糊
+        painter.setFont(f)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
         typo_x, typo_y = a['x'] - ox, a['y'] - oy + int(size * 0.85)
-        text = a.get('text', '')
-        # 深色投影：浅色背景上也能看清
-        painter.setPen(QColor(0, 0, 0, 150))
-        painter.drawText(QPointF(typo_x + 1.5, typo_y + 1.5), text)
+        # 只画一层：旧版的 1.5px 黑色投影在压缩后就是“重影”
         painter.setPen(col)
-        painter.drawText(QPointF(typo_x, typo_y), text)
+        painter.drawText(QPointF(typo_x, typo_y), a.get('text', ''))
 
 
 class AnnotationOverlay(QWidget):
@@ -1412,6 +2179,12 @@ class AnnotationOverlay(QWidget):
         self._exclude_rects = [r for r in (rects or []) if r]
         self.update()
 
+    def set_temp_text(self, ann):
+        """文字输入期间把“未提交”的文字实时画到画面上（边打字边预览）；
+        传 None 清除。图元不进 recorder，确认后才成为正式标注。"""
+        self._live = ann
+        self.update()
+
     def _sync_click_through(self):
         """手模式=窗口整体鼠标穿透；绘制模式=接收鼠标；全程不抢焦点"""
         try:
@@ -1468,9 +2241,13 @@ class AnnotationOverlay(QWidget):
             self._live = {'type': 'pen', 'color': self._color,
                           'width': self._width * ANN_MARKER_FACTOR, 'alpha': 90,
                           'pts': [(g.x(), g.y())]}
-        elif self._tool in ('arrow', 'rect', 'ellipse'):
-            self._live = {'type': self._tool, 'color': self._color, 'width': self._width,
+        elif self._tool in ('arrow', 'rect', 'ellipse', 'dashrect'):
+            is_dash_rect = self._tool == 'dashrect'
+            self._live = {'type': 'rect' if is_dash_rect else self._tool,
+                          'color': self._color, 'width': self._width,
                           'x1': g.x(), 'y1': g.y(), 'x2': g.x(), 'y2': g.y()}
+            if is_dash_rect:
+                self._live['dash'] = True
         self.update()
 
     def mouseMoveEvent(self, e):
@@ -1485,7 +2262,9 @@ class AnnotationOverlay(QWidget):
             # 悬停在已有文字上显示"可拖动"光标
             self.setCursor(Qt.SizeAllCursor if self._hit_text(g.x(), g.y()) is not None
                            else Qt.CrossCursor)
-        if not self._live or not (e.buttons() & Qt.LeftButton):
+        if not self._live or self._live.get('type') not in ('pen', 'arrow', 'line', 'rect', 'ellipse'):
+            return      # 文字预览不是鼠标绘制的图元，不能在这里当形状改坐标
+        if not (e.buttons() & Qt.LeftButton):
             return
         if self._live['type'] == 'pen':
             pts = self._live['pts']
@@ -1504,6 +2283,10 @@ class AnnotationOverlay(QWidget):
         if e.button() != Qt.LeftButton or not self._live:
             return
         live = self._live
+        # 只提交鼠标绘制的图元：文字预览（_live 由 set_temp_text 写入）没有 x1/y1，
+        # 旧版在这里 live['x1'] 直接 KeyError，PyQt5 会瞬间杀掉整个面板进程
+        if live.get('type') not in ('pen', 'arrow', 'line', 'rect', 'ellipse'):
+            return
         self._live = None
         g = e.globalPos()
         if live['type'] == 'pen':
@@ -1540,67 +2323,341 @@ class AnnotationOverlay(QWidget):
         _paint_annotations(painter, anns, ox, oy, live=self._live)
 
 
+class _SwatchBtn(QAbstractButton):
+    """色板色块：浅色工具条上的 18px 圆点，选中画外环而不是粗边框。
+
+    旧版用 22px 方块 + 2px 白边表示选中：白边向内吃尺寸，选中/未选中都看不出
+    颜色，且黄色/白色在浅底上没有边界。这里固定 18px 色块 + 1px 深色描边，
+    选中改画外侧 2px 主色环（留 2px 空隙）：尺寸不变、位置不跳，一眼能看出选中。
+    """
+
+    def __init__(self, rgb, tip, parent=None):
+        super().__init__(parent)
+        self._rgb = rgb
+        self._sel = False
+        self._hover = False
+        self.setFixedSize(22, 22)
+        self.setToolTip(tip)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+
+    def set_selected(self, sel):
+        if self._sel != sel:
+            self._sel = sel
+            self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        if self._sel or self._hover:
+            # 浅色工具条上白环看不见：选中用主色环、悬浮用灰环
+            p.setPen(QPen(QColor(79, 110, 247) if self._sel
+                          else QColor(203, 213, 225), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), 9.5, 9.5)
+        # 白/黄这类浅色圆点在浅底上没有边界，统一压一圈深色细边；
+        # 黑/深蓝本身有反差，细边几乎看不出，也不影响
+        edge = QColor(15, 23, 42, 90)
+        p.setPen(QPen(edge, 1))
+        p.setBrush(QColor(*self._rgb))
+        p.drawEllipse(QPointF(cx, cy), 7.0, 7.0)
+        p.end()
+
+
+class _LineWidthBtn(QAbstractButton):
+    """线宽按钮：直接画一条对应像素粗细的线。
+
+    旧版按钮只写“细/中/粗”，看不出 3/5/8px 到底差多少；现在按钮里就是实际
+    笔画粗细（选中态蓝底白线、悬浮态灰底），换颜色也不影响判断线宽。
+    """
+
+    def __init__(self, width, tip, parent=None):
+        super().__init__(parent)
+        self._width = int(width)
+        self._sel = False
+        self._hover = False
+        self.setFixedSize(38, 24)
+        self.setToolTip(tip)
+        self.setAccessibleName(tip)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+
+    def set_selected(self, sel):
+        if self._sel != sel:
+            self._sel = sel
+            self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        if self._sel or self._hover:
+            p.setPen(QPen(QColor(199, 210, 254), 1) if self._sel else Qt.NoPen)
+            p.setBrush(QColor(79, 110, 247) if self._sel else QColor(238, 241, 246))
+            p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 6, 6)
+        p.setPen(QPen(QColor(255, 255, 255) if self._sel else QColor(100, 116, 139),
+                      self._width, Qt.SolidLine, Qt.RoundCap))
+        y = self.height() / 2.0
+        p.drawLine(QPointF(8, y), QPointF(self.width() - 8, y))
+        p.end()
+
+
+class _GrowLineEdit(QLineEdit):
+    """会随内容变宽的单行输入框：额外跟踪输入法组字（拼音未上屏）的预编辑文本。
+
+    QLineEdit 在组字期间不触发 textChanged，text() 也不含拼音；若只看 text()，
+    框宽会停在旧值、拼音被压在框里滚动。这里把 preeditString 一起计入宽度。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.preedit = ''        # 输入法组字中的拼音（尚未上屏）
+
+    def inputMethodEvent(self, e):
+        self.preedit = e.preeditString() or ''
+        super().inputMethodEvent(e)
+
+
 class _TextInputPopup(QWidget):
-    """文字标注输入框：悬浮在点击位置旁，Enter 确认 / Esc 取消 / 失焦取消"""
+    """文字标注输入框：输入框本身就直接长在画面上的文字位置（单层，所见即所得）
+
+    旧版是“深色输入框 + 画面上另画一份同样的预览文字”，同一句话看两遍，位置还对不齐；
+    现在只保留输入框这一层：透明底、与标注同色同字号、宽度随内容增长，
+    确认后原地变成正式标注（基线对齐 _paint_one_annotation，文字不会跳位置）。
+
+    Enter / 点击输入框外面 = 确认（空文本则静默关闭）；Esc = 取消。
+    """
 
     def __init__(self, on_ok, on_cancel, on_vis=None):
         super().__init__()
         self._on_ok = on_ok
         self._on_cancel = on_cancel
-        self._on_vis = on_vis       # 显示/隐藏回调（通知标注层同步命中排除区）
+        self._on_vis = on_vis       # 显隐/尺寸变化回调（通知标注层同步命中排除区）
         self._anchor = (0, 0)
+        self._color = ANN_COLORS['红色']
+        self._size = ANN_TEXT_DEFAULT
+        self._closed_at = 0.0        # 最近一次关闭时刻（抑制同一下点击又弹出新框）
+        self._cur_w = 0              # 本次输入已到达的宽度（只增不减，避免长句输入时窗口来回变）
+        self._border = QColor(226, 232, 240, 110)   # 虚线边框色：_apply_style 按衬底深浅换
+        self._armed = False          # 输入框是否已真正拿到焦点（激活过程中的抖动不算“点外面”）
+        self._finishing = False      # 正在关闭：hide() 引发的焦点迁移不能再提交一次
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setFixedSize(300, 50)
-        self.setStyleSheet(
-            "QWidget { background:#111827; border:1px solid rgba(255,255,255,70);"
-            " border-radius:10px; }"
-            "QLineEdit { background:#1f2937; color:#fff; border:none; border-radius:7px;"
-            " font-size:15px; padding:6px 10px; }")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        self._edit = QLineEdit()
-        self._edit.setPlaceholderText('输入文字，Enter 确认，Esc 取消')
+        # 透明底：窗口上只留一行字和一圈淡虚线（虚线在 paintEvent 里自绘）
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._edit = _GrowLineEdit()
+        self._edit.setPlaceholderText('输入文字')
         self._edit.returnPressed.connect(self._commit)
+        self._edit.textChanged.connect(lambda _t: self._sync_size())
+        # 轮询兑底：输入法组字期间 textChanged 不触发，靠它让宽度跟手（80ms 足够跟眼）
+        self._poll = QTimer(self)
+        self._poll.setInterval(80)
+        self._poll.timeout.connect(self._sync_size)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 1, 2, 1)   # 只留给虚线框，文字尽量贴锚点
+        lay.setSpacing(0)
         lay.addWidget(self._edit)
+        self._apply_style()
         self.hide()
+        # 焦点离开整个输入框窗口 = 点了外面。QWidget.focusOutEvent 只在“弹窗自己”
+        # 持有焦点时才触发，而焦点始终在内部 QLineEdit 上，必须监听全局焦点信号。
+        _app = QApplication.instance()
+        if _app is not None:
+            _app.focusChanged.connect(self._on_focus_changed)
+
+    def _font(self):
+        """与画面标注完全同一套字体（_paint_one_annotation：像素字号 + 粗体 + 全 hinting）"""
+        f = QFont('Microsoft YaHei')
+        f.setPixelSize(int(self._size))
+        f.setBold(True)
+        f.setHintingPreference(QFont.PreferFullHinting)
+        return f
+
+    def _apply_style(self):
+        """输入期间衬一块底色：透明底 + 裸字压在画面上时标注色会看不清。
+
+        按标注色亮度选衬底：亮色（红/黄/紫/白…）用深底 + 同色提亮版；
+        深色（黑/深蓝）用浅底 + 原色——白底页面上的黑字才看得清，
+        确认后仍按原色写进画面。"""
+        r, g, b = self._color
+        if _lum(self._color) < 100:
+            tr, tg, tb = r, g, b
+            bg, ph = 'rgba(248,250,252,232)', QColor(71, 85, 105, 190)
+            sel_bg, sel_fg = '#93c5fd', '#0f172a'
+            self._border = QColor(15, 23, 42, 120)
+        else:
+            tr, tg, tb = _readable_on_dark(r, g, b)
+            bg, ph = 'rgba(15,23,42,200)', QColor(226, 232, 240, 140)
+            sel_bg, sel_fg = '#2563eb', '#ffffff'
+            self._border = QColor(226, 232, 240, 110)
+        self._edit.setFont(self._font())
+        # 占位文字色走调色板：QLineEdit 的 QSS 不认 placeholder-text-color（Qt5 报 Unknown property）
+        if hasattr(QPalette, 'PlaceholderText'):
+            pal = self._edit.palette()
+            pal.setColor(QPalette.PlaceholderText, ph)
+            self._edit.setPalette(pal)
+        self._edit.setStyleSheet(
+            "QLineEdit { background:%s; border:none; border-radius:4px;"
+            " padding:0 5px; color:rgb(%d,%d,%d);"
+            " selection-background-color:%s; selection-color:%s; }" % (bg, tr, tg, tb, sel_bg, sel_fg))
+        self._sync_size()
+
+    def _sync_size(self):
+        """宽度：默认就够长（240px），超过后按 96px 大块只增不减，到屏幕宽为止。
+
+        旧版每输入一个字就 setFixedSize 一次：框宽逐像素刷新 + 光标回边触发
+        QLineEdit 内部滚动，输入长句时看起来“一直在跳”。改成按 96px（约 4 个汉字）
+        的大块跳跃后，一整句话只 resize 三五次，肉眼几乎看不到跳；到上限后宽度
+        锁死，由输入框自己水平滚动。
+        """
+        fm = QFontMetrics(self._font())
+        # 组字中的拼音也要占宽，否则中文输入时框不动、拼音被压在旧宽度里滚动
+        text = self._edit.text() + getattr(self._edit, 'preedit', '')
+        need = fm.horizontalAdvance(text)
+        # 默认宽度：能一次装下十来个汉字，短词/拼音不会先宽后缩
+        base = max(240, fm.horizontalAdvance('输入文字') + 28)
+        vg = QApplication.primaryScreen().virtualGeometry()
+        # 宽度上界跟着锚点走：右边界到屏幕边就停。旧版按“整屏宽-24”算，靠近右边缘
+        # 标注一变宽就会被 _place 往左推回去（文字跟着横移）；按锚点算则永不横移
+        left = max(vg.x(), self._anchor[0] - 9)
+        cap = max(base, vg.x() + vg.width() - left)
+        if need + 28 <= base:
+            tw = base
+        else:
+            # 从 base 起步按 96px 整块向上取整：宽度只会跳几大档，不会逐字微调
+            step = 96
+            blocks = (need + 40 - base + step - 1) // step
+            tw = min(cap, base + blocks * step)
+        tw = max(self._cur_w, tw)                 # 本次输入内只增不减
+        th = max(22, fm.height() + 2)
+        # 尺寸真变了才动窗口：80ms 轮询每次都 resize/move 会让透明窗口整块重绘（输入时抖动）
+        if self.width() == tw and self.height() == th:
+            return
+        self._cur_w = tw
+        self.setFixedSize(tw, th)
+        if self.isVisible():
+            self._place()
+            if self._on_vis:
+                self._on_vis()      # 尺寸变了，鼠标穿透排除区要跟着更新
+
+    def _place(self):
+        """把框摆到锚点上：框内文字基线与 _paint_one_annotation 的画法对齐，确认时不位移"""
+        gx, gy = self._anchor
+        fm = QFontMetrics(self._font())
+        # 标注基线在 gy + size*0.85；框内文字基线 = 上边距(1) + ascent + QLineEdit 内部偏移
+        off_y = int(self._size * 0.85) - fm.ascent() - 2
+        vg = QApplication.primaryScreen().virtualGeometry()
+        # x 同样补上文字起点偏移（衬底左内边距 5px + QLineEdit 内部 4px），确认瞬间文字不会横移
+        x = max(vg.x(), min(gx - 9, vg.x() + vg.width() - self.width()))
+        y = max(vg.y(), min(gy + off_y, vg.y() + vg.height() - self.height()))
+        if self.x() != x or self.y() != y:   # 位置没变不动窗口，避免重复 move 触发重绘
+            self.move(x, y)
+
+    def paintEvent(self, e):
+        """只画一圈淡虚线：alpha=1 的底让整块都能接鼠标（per-pixel alpha 窗口空白处会穿透）"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        # 衬底颜色变了，虚线边框要跟着换（深底用淡白、浅底用深灰，任何颜色下都能辨认边界）
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(self._border, 1, Qt.DashLine))
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 4, 4)
 
     def anchor(self):
         return self._anchor
 
-    def open_at(self, gx, gy):
+    def last_closed_at(self):
+        return self._closed_at
+
+    def open_at(self, gx, gy, color=None, size=None):
+        if color is not None:
+            self._color = color
+        if size is not None:
+            self._size = size
         self._anchor = (gx, gy)
-        vg = QApplication.primaryScreen().virtualGeometry()
-        x = max(vg.x() + 4, min(gx, vg.x() + vg.width() - self.width() - 4))
-        y = gy + 18
-        if y + self.height() > vg.y() + vg.height() - 4:
-            y = gy - self.height() - 18
-        self.move(x, y)
+        self._cur_w = 0              # 新一次输入：宽度重新从默认值算
+        self._edit.blockSignals(True)
         self._edit.clear()
+        self._edit.blockSignals(False)
+        self._apply_style()
+        self._place()               # 先摆到锚点再 show，避免先闪一下再跳位
+        self._armed = False
         self.show()
         self.raise_()
         self.activateWindow()
         self._edit.setFocus()
+        self._poll.start()
+
+    def _finish(self, submit):
+        """关闭输入框：submit=True 提交非空文本，否则只清预览
+
+        hide() 会把焦点还给系统，全局 focusChanged 会因此再次回调到这里，
+        必须重入保护，否则同一条文字会被提交两次（画面上叠两层字）。
+        """
+        if self._finishing:
+            return
+        self._finishing = True
+        try:
+            text = self._edit.text().strip()
+            self._closed_at = time.time()
+            self._armed = False
+            self.hide()
+            if submit and text:
+                self._on_ok(text)
+            else:
+                self._on_cancel()
+        finally:
+            self._finishing = False
+
+    def cancel(self):
+        """外部强制关闭（隐藏工具条时），不提交"""
+        self._finish(False)
+
+    def submit(self):
+        """外部触发提交（点到画面时等同回车确认）"""
+        self._finish(True)
 
     def _commit(self):
-        text = self._edit.text().strip()
-        self.hide()
-        if text:
-            self._on_ok(text)
-        else:
-            self._on_cancel()
+        self._finish(True)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self.hide()
-            self._on_cancel()
+            self._finish(False)
         else:
             super().keyPressEvent(e)
 
+    def _on_focus_changed(self, _old, now):
+        """焦点从输入框移到别处 = 点外面，默认确认（不用回车）"""
+        if not self.isVisible():
+            return
+        if now is not None and now.window() is self:
+            self._armed = True      # 焦点已落在输入框内，之后再离开才算“点外面”
+            return
+        if self._armed:
+            self._finish(True)
+
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
-        if self.isVisible():
-            self.hide()
-            self._on_cancel()
+        if self.isVisible() and self._armed:
+            # 兜底：焦点直接从弹窗离开（内部控件未接管时）
+            self._finish(True)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1609,12 +2666,13 @@ class _TextInputPopup(QWidget):
 
     def hideEvent(self, e):
         super().hideEvent(e)
+        self._poll.stop()
         if self._on_vis:
             self._on_vis()
 
 
 class AnnotationToolbar(QWidget):
-    """录制中标注工具条：工具 / 颜色 / 粗细 / 撤销 / 清空（贴靠主面板显示）"""
+    """录制中标注工具条：工具 / 颜色 / 线宽 / 字号 / 撤销 / 清空（贴靠主面板显示）"""
 
     # 按钮直接用中文标注用途（图标 emoji 在不同字体下显示差异大、难以辨认）
     TOOLS = [
@@ -1622,9 +2680,10 @@ class AnnotationToolbar(QWidget):
         ('pen',     '画笔', '画笔：自由手绘'),
         ('arrow',   '箭头', '箭头：拖拽画直线箭头'),
         ('rect',    '矩形', '矩形：拖拽画矩形框'),
+        ('dashrect', '虚线框', '虚线框：拖拽画虚线矩形（默认最细，可调线宽）'),
         ('ellipse', '椭圆', '椭圆：拖拽画椭圆框'),
         ('marker',  '荧光', '荧光笔：半透明粗线划重点'),
-        ('text',    '文字', '文字：点击空白输入文字；按住已有文字可拖动位置'),
+        ('text',    '文字', '文字：点击画面直接输入（输入框就在文字位置，所见即所得）；字号/颜色见下方；按住已有文字可拖动'),
     ]
 
     def __init__(self, recorder, ann_overlay):
@@ -1634,8 +2693,12 @@ class AnnotationToolbar(QWidget):
         self._tool = 'hand'
         self._color_key = '红色'
         self._width_key = '中'
+        self._size = ANN_TEXT_DEFAULT
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setFixedSize(352, 76)
+        self.setObjectName('annRoot')
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # 宽度随工具变化（文字工具只显示字号、绘图工具只显示线宽），不再固定 352
+        self._panel = None      # 贴靠的主面板引用（显隐变宽后重新贴靠用）
         # 不激活窗口：避免 Windows 首次点击被“激活窗口”吞掉（需点两次才生效），
         # 同时点击工具条不会抢走浏览器/应用的键盘焦点
         try:
@@ -1648,12 +2711,24 @@ class AnnotationToolbar(QWidget):
         except Exception:
             pass
         self.setStyleSheet("""
-            QWidget { background:#1f2937; color:#f3f4f6; border-radius:10px; }
-            QPushButton, QToolButton { border:none; border-radius:6px; font-size:13px; font-weight:600; }
-            QToolButton { font-size:9px; padding:1px; }
-            QPushButton#annOn, QToolButton#annOn { background:#2563eb; color:#fff; }
-            QPushButton#annOff, QToolButton#annOff { background:#374151; color:#cbd5e1; }
-            QPushButton#annOff:hover, QToolButton#annOff:hover { background:#4b5563; }
+            QWidget { color:#1e293b; font-family:'Microsoft YaHei'; }
+            QLabel { background:transparent; }
+            /* 工具按钮：未选中透明、悬浮浮出浅灰底、选中填主色（与面板分段控件同一套语义）*/
+            QPushButton, QToolButton { border:none; border-radius:7px; padding:0;
+                                      background:transparent; color:#475569;
+                                      font-size:12px; font-weight:600; font-family:'Microsoft YaHei'; }
+            QPushButton:hover, QToolButton:hover { background:#eef1f6; color:#1e293b; }
+            /* 选中态要一眼可见：主色填充 + 白字加粗 + 淡蓝描边（与全站主按钮同一套） */
+            QPushButton#annOn, QToolButton#annOn { background:#4f6ef7; color:#ffffff;
+                                                   border:1px solid #c7d2fe; font-weight:800; }
+            QPushButton#annOn:hover, QToolButton#annOn:hover { background:#3b5de7; border-color:#93c5fd; }
+            QPushButton#annOff, QToolButton#annOff { background:transparent; color:#64748b; }
+            QPushButton#annDanger { color:#dc2626; }
+            QPushButton#annDanger:hover { background:#fef2f2; color:#b91c1c; }
+            QMenu { background:#ffffff; color:#1e293b; border:1px solid #e2e8f0;
+                    border-radius:8px; padding:4px; font-size:12px; }
+            QMenu::item { padding:5px 24px 5px 10px; border-radius:4px; }
+            QMenu::item:selected { background:#eef1fe; color:#4f6ef7; }
         """)
 
         root = QVBoxLayout(self)
@@ -1667,7 +2742,7 @@ class AnnotationToolbar(QWidget):
             b = QToolButton()               # 纯图标按钮（用途说明放悬停提示）
             b.setFixedSize(42, 30)
             b.setIconSize(QSize(20, 20))
-            b.setIcon(_tool_icon(key, '#cbd5e1'))
+            b.setIcon(_tool_icon(key, '#475569'))
             b.setToolTip(tip)
             b.setCursor(QCursor(Qt.PointingHandCursor))
             b.clicked.connect(lambda _=False, k=key: self._pick_tool(k))
@@ -1678,62 +2753,112 @@ class AnnotationToolbar(QWidget):
 
         row2 = QHBoxLayout()
         row2.setSpacing(5)
+        # 色板：10 色装进一个浅色圆角槽里（比一排裸圆点更像“取色器”，视线一扫就能比色）
         self._color_btns = {}
+        pal_box = QWidget()
+        pal_box.setObjectName('annPal')
+        pal_box.setStyleSheet('QWidget#annPal { background:#f1f4fa; border-radius:10px; }')
+        pl = QHBoxLayout(pal_box)
+        pl.setContentsMargins(5, 1, 5, 1)
+        pl.setSpacing(1)
         for key, rgb in ANN_COLORS.items():
-            b = QPushButton()
-            b.setFixedSize(22, 22)
-            b.setToolTip(f'颜色：{key}')
-            b.setCursor(QCursor(Qt.PointingHandCursor))
+            b = _SwatchBtn(rgb, f'颜色：{key}（画笔/箭头/框/文字共用）')
             b.clicked.connect(lambda _=False, k=key: self._pick_color(k))
-            row2.addWidget(b)
+            pl.addWidget(b)
             self._color_btns[key] = b
-        row2.addSpacing(10)
+        row2.addWidget(pal_box)
+        row2.addSpacing(8)
+        # 线宽档（细/中/粗）：只对画笔/箭头/框/荧光笔这类“画线”工具有意义，
+        # 文字/手工具时整组隐藏（用户反馈无关档位常年显示太啰嗦）
+        self._width_group = QWidget()
+        self._width_group.setStyleSheet('background:transparent;')
+        wl = QHBoxLayout(self._width_group)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(5)
         self._width_btns = {}
-        for key in ('细', '中', '粗'):
-            b = QPushButton(key)
-            b.setFixedSize(34, 24)
-            b.setToolTip(f'线宽：{key}')
-            b.setCursor(QCursor(Qt.PointingHandCursor))
+        for key, px in ANN_WIDTHS.items():
+            b = _LineWidthBtn(px, f'线宽：{key}（{px}px；画笔/箭头/框/荧光共用）')
             b.clicked.connect(lambda _=False, k=key: self._pick_width(k))
-            row2.addWidget(b)
+            wl.addWidget(b)
             self._width_btns[key] = b
+        row2.addWidget(self._width_group)
+        # 字号：点按钮从像素档里选（与线宽档占同一个槽位，切换工具不跳位置）
+        self._size_group = QWidget()
+        self._size_group.setStyleSheet('background:transparent;')
+        sl = QHBoxLayout(self._size_group)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(5)
+        size_lab = QLabel('字号')
+        size_lab.setStyleSheet('background:transparent; color:#64748b; font-size:11px;')
+        sl.addWidget(size_lab)
+        self._size_btn = QPushButton()
+        self._size_btn.setFixedSize(64, 24)
+        self._size_btn.setToolTip('文字字号：点击选择像素大小')
+        self._size_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self._size_btn.clicked.connect(self._show_size_menu)
+        sl.addWidget(self._size_btn)
+        self._size_menu = QMenu(self)
+        self._size_actions = {}
+        for px in ANN_TEXT_SIZES:
+            act = self._size_menu.addAction(f'{px} px')
+            act.setCheckable(True)
+            act.triggered.connect(lambda _=False, v=px: self._pick_size(v))
+            self._size_actions[px] = act
+        # QMenu 是独立顶层窗口，不会继承工具条的 WDA 排除；不单独处理会被录进视频
+        _exclude_from_capture(self._size_menu)
+        row2.addWidget(self._size_group)
         row2.addStretch()
+        root.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.setSpacing(5)
+        row3.addStretch()
         undo_btn = QPushButton('撤销')
         undo_btn.setFixedSize(44, 24)
         undo_btn.setToolTip('撤销上一个标注')
         undo_btn.setCursor(QCursor(Qt.PointingHandCursor))
         undo_btn.clicked.connect(self._on_undo)
-        row2.addWidget(undo_btn)
+        row3.addWidget(undo_btn)
         clr_btn = QPushButton('清空')
+        clr_btn.setObjectName('annDanger')
         clr_btn.setFixedSize(44, 24)
         clr_btn.setToolTip('清空全部标注（只影响之后的画面）')
         clr_btn.setCursor(QCursor(Qt.PointingHandCursor))
         clr_btn.clicked.connect(self._on_clear)
-        row2.addWidget(clr_btn)
-        root.addLayout(row2)
+        row3.addWidget(clr_btn)
+        root.addLayout(row3)
 
-        # 文字输入弹窗（点击画面位置后弹出）
+        # 文字输入框（点击画面位置后弹出）：它就是画面上那行字本身，不再另画一层预览
         self._text_popup = _TextInputPopup(self._on_text_ok, self._on_text_cancel,
                                            self._sync_exclude)
         _exclude_from_capture(self._text_popup)
-        self._overlay._on_text_click = self._text_popup.open_at
+        self._overlay._on_text_click = self._open_text_input
 
         self._refresh_styles()
         self.hide()
 
     # ── 对外 ────────────────────────
 
+    def paintEvent(self, e):
+        # 半透明顶层 + 自绘圆角卡片：与主面板同一张“浅色玻璃卡”（白底 + 灰蓝描边）
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(226, 232, 240), 1))
+        p.setBrush(QColor(255, 255, 255, 246))
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 12, 12)
+
     def reset(self):
         self._tool = 'hand'
         self._color_key = '红色'
         self._width_key = '中'
+        self._size = ANN_TEXT_DEFAULT
         self._overlay.set_tool('hand')
         self._overlay.set_style(color=ANN_COLORS['红色'], width=ANN_WIDTHS['中'])
         self._refresh_styles()
 
     def dismiss(self):
         """隐藏工具条（含文字输入框）"""
-        self._text_popup.hide()
+        self._text_popup.cancel()
         self.hide()
         self._sync_exclude()
 
@@ -1747,12 +2872,14 @@ class AnnotationToolbar(QWidget):
         self.move(x, y)
 
     def show_beside(self, panel):
+        self._panel = panel
         self._place_at(panel)
         self.show()
         self.raise_()
         self._sync_exclude()
 
     def move_beside(self, panel):
+        self._panel = panel
         if self.isVisible():
             self._place_at(panel)
             self._sync_exclude()
@@ -1769,7 +2896,12 @@ class AnnotationToolbar(QWidget):
     # ── 交互 ────────────────────────
 
     def _pick_tool(self, key):
+        prev = self._tool
         self._tool = 'hand' if (key == self._tool and key != 'hand') else key
+        # 虚线框首次选中默认最细；用户手动调粗后保持当前选择，不强行改回
+        if self._tool == 'dashrect' and prev != 'dashrect':
+            self._width_key = '细'
+            self._overlay.set_style(width=ANN_WIDTHS['细'])
         self._overlay.set_tool(self._tool)
         self._refresh_styles()
         self.raise_()    # 始终显示在标注层之上，保证按钮可点击
@@ -1784,6 +2916,25 @@ class AnnotationToolbar(QWidget):
         self._overlay.set_style(width=ANN_WIDTHS[key])
         self._refresh_styles()
 
+    def _show_size_menu(self):
+        self._size_menu.popup(self._size_btn.mapToGlobal(
+            QPoint(0, self._size_btn.height() + 4)))
+
+    def _pick_size(self, px):
+        self._size = int(px)
+        self._refresh_styles()
+
+    def _open_text_input(self, gx, gy):
+        """点击画面：正在输入时 = 确认当前这条；空着时 = 在点击处新建输入框"""
+        popup = self._text_popup
+        if popup.isVisible():
+            popup.submit()      # 点到画面 = 确认（不用回车，也不会另起一个空框）
+            return
+        # 这一下点击刚刚引发失焦提交（“点外面 = 确认”）：不再紧接着弹出新框
+        if time.time() - popup.last_closed_at() < 0.35:
+            return
+        popup.open_at(gx, gy, ANN_COLORS[self._color_key], self._size)
+
     def _on_undo(self):
         self._recorder.undo_annotation()
         self._overlay.update()
@@ -1794,30 +2945,158 @@ class AnnotationToolbar(QWidget):
 
     def _on_text_ok(self, text):
         gx, gy = self._text_popup.anchor()
+        self._overlay.set_temp_text(None)   # 预览转正：避免与最终标注重影
         self._recorder.add_annotation({'type': 'text', 'color': ANN_COLORS[self._color_key],
-                                       'size': 22, 'x': gx, 'y': gy, 'text': text})
+                                       'size': self._size,
+                                       'x': gx, 'y': gy, 'text': text})
         self._overlay.update()
         # 保持文字工具：写完可立即按住文字拖动位置（不用再点一次按钮）
 
     def _on_text_cancel(self):
-        pass   # 取消输入后保持文字工具，便于重新点击或拖动已有文字
+        # 取消输入：清掉画面上的实时预览，保持文字工具便于重新点击或拖动已有文字
+        self._overlay.set_temp_text(None)
 
     def _refresh_styles(self):
+        text_mode = self._tool == 'text'
+        hand_mode = self._tool == 'hand'
         for key, b in self._tool_btns.items():
             on = key == self._tool
             b.setObjectName('annOn' if on else 'annOff')
-            b.setIcon(_tool_icon(key, '#ffffff' if on else '#cbd5e1'))
+            b.setIcon(_tool_icon(key, '#ffffff' if on else '#475569'))
             b.setStyle(b.style())
         for key, b in self._color_btns.items():
-            r, g, bl = ANN_COLORS[key]
-            sel = key == self._color_key
-            b.setStyleSheet(
-                "QPushButton { background:rgb(%d,%d,%d); border-radius:11px;"
-                " border:2px solid %s; }" % (r, g, bl,
-                                             '#ffffff' if sel else 'rgba(255,255,255,60)'))
+            b.set_selected(key == self._color_key)
         for key, b in self._width_btns.items():
-            b.setObjectName('annOn' if key == self._width_key else 'annOff')
-            b.setStyle(b.style())
+            b.set_selected(key == self._width_key)
+        self._size_btn.setText(f'{self._size} px')
+        for px, act in self._size_actions.items():
+            act.setChecked(px == self._size)
+        # 档位按工具显隐：线宽只在绘图工具出现，字号只在文字工具出现（手模式都收起）
+        self._width_group.setVisible(not text_mode and not hand_mode)
+        self._size_group.setVisible(text_mode)
+        self.adjustSize()
+        # 宽度变了就重新贴靠面板，并把新的鼠标穿透排除区同步给标注层
+        if self.isVisible() and self._panel is not None:
+            self._place_at(self._panel)
+            self._sync_exclude()
+
+
+class _MiniRecBar(QWidget):
+    """录制中的迷你状态条：面板隐藏后的常驻控制入口。
+
+    用户点“—”隐藏面板后找不到状态框（以为录制失控、没有停止入口），
+    这里把隐藏收成一条迷你胶囊：● REC + 计时 + 暂停/继续 + 停止 + 恢复面板。
+    置顶可拖动，与面板一样被排除在录屏/截图外。
+    """
+
+    def __init__(self, panel):
+        super().__init__()
+        self._panel = panel
+        self._drag_pos = None
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("""
+            QWidget { color:#1e293b; font-family:'Microsoft YaHei'; }
+            QLabel#miniRec { color:#ef4444; font-size:12px; font-weight:700; background:transparent; }
+            QLabel#miniTime { color:#1e293b; font-size:15px; font-weight:600;
+                              font-family:Consolas,'Courier New',monospace; background:transparent; }
+            QPushButton { border:none; border-radius:6px; height:24px; padding:0 10px;
+                          font-size:12px; font-weight:600; font-family:'Microsoft YaHei'; }
+            QPushButton#miniPause { background:#d97706; color:#fff; }
+            QPushButton#miniPause:hover { background:#b45309; }
+            QPushButton#miniStop { background:#059669; color:#fff; }
+            QPushButton#miniStop:hover { background:#047857; }
+            QPushButton#miniBack { background:#eef1f6; color:#475569; }
+            QPushButton#miniBack:hover { background:#e2e8f0; color:#1e293b; }
+        """)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 8, 8)
+        lay.setSpacing(8)
+        self._rec_lbl = QLabel('● REC')
+        self._rec_lbl.setObjectName('miniRec')
+        lay.addWidget(self._rec_lbl)
+        self._time_lbl = QLabel('00:00')
+        self._time_lbl.setObjectName('miniTime')
+        lay.addWidget(self._time_lbl)
+        self._pause_btn = QPushButton('暂停')
+        self._pause_btn.setObjectName('miniPause')
+        self._pause_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self._pause_btn.setToolTip('暂停/继续（与面板同步）')
+        self._pause_btn.clicked.connect(self._on_pause)
+        lay.addWidget(self._pause_btn)
+        self._stop_btn = QPushButton('■ 停止')
+        self._stop_btn.setObjectName('miniStop')
+        self._stop_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self._stop_btn.setToolTip('停止并保存录制')
+        self._stop_btn.clicked.connect(self._on_stop)
+        lay.addWidget(self._stop_btn)
+        back = QPushButton('⤢ 恢复面板')
+        back.setObjectName('miniBack')
+        back.setCursor(QCursor(Qt.PointingHandCursor))
+        back.setToolTip('回到完整录制控制台')
+        back.clicked.connect(self._on_back)
+        lay.addWidget(back)
+        self.hide()
+
+    def paintEvent(self, e):
+        # 与主面板同一张浅色玻璃卡
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(226, 232, 240), 1))
+        p.setBrush(QColor(255, 255, 255, 246))
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 12, 12)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_pos = QPoint(e.globalPos() - self.frameGeometry().topLeft())
+
+    def mouseMoveEvent(self, e):
+        if self._drag_pos and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPos() - self._drag_pos)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_pos = None
+
+    def set_recording(self, on):
+        """录制中：REC 红字 + 计时 + 暂停/停止；就绪态：只留「恢复面板」。
+
+        用户点“—”后必须总能看到这个入口（以前非录制态隐藏面板就凭空消失），
+        所以迷你条常驻显示，只是就绪态收起与录制相关的控件。"""
+        self._rec_lbl.setText('● REC' if on else '● 就绪')
+        self._rec_lbl.setStyleSheet('color:#ef4444;' if on else 'color:#16a34a;')
+        for w in (self._time_lbl, self._pause_btn, self._stop_btn):
+            w.setVisible(bool(on))
+        self.adjustSize()
+
+    def show_at(self, pos=None):
+        """在面板原位置出现（没给位置时落屏幕右上角），并收敛回可视屏内"""
+        self.adjustSize()
+        vg = QApplication.primaryScreen().virtualGeometry()
+        if pos is not None:
+            x, y = pos.x(), pos.y()
+        else:
+            x = vg.x() + vg.width() - self.width() - 16
+            y = vg.y() + 16
+        x = max(vg.x() + 4, min(x, vg.x() + vg.width() - self.width() - 4))
+        y = max(vg.y() + 4, min(y, vg.y() + vg.height() - self.height() - 4))
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+    def set_time(self, text):
+        self._time_lbl.setText(text)
+
+    def set_paused(self, paused):
+        self._pause_btn.setText('继续' if paused else '暂停')
+
+    def _on_pause(self):
+        self._panel._on_pause()
+
+    def _on_stop(self):
+        self._panel._on_stop()      # 收尾完成后 _on_stop 会把面板恢复出来
+
+    def _on_back(self):
+        self._panel._mini_restore()
 
 
 # ═══════════════════════════════════════════════════
@@ -1893,8 +3172,13 @@ class RecordingBorder(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         recording = self._state == 'recording'
-        # 预览用明亮玫红更友好，录制中用正红更醒目
-        main = QColor(220, 38, 38) if recording else QColor(244, 63, 94)
+        # 三态三色：预览=玫红（未开始）、录制=正红、暂停=琥珀（一眼区分“在录但没写帧”）
+        if recording and self._paused_flag:
+            main = QColor(245, 158, 11)
+        elif recording:
+            main = QColor(220, 38, 38)
+        else:
+            main = QColor(244, 63, 94)
         # 1) 外发光：三层由粗到细、由淡到浓的同心描边，柔和衰减不出现硬边
         painter.setBrush(Qt.NoBrush)
         for grow, alpha in ((13, 14), (8, 34), (4, 70)):
@@ -1919,14 +3203,19 @@ class RecordingBorder(QWidget):
         self._draw_corners(painter, cl)
         # 4) 胶囊标签：预览时附带目标尺寸，录制时显示状态
         if recording:
-            label = '⏸ 已暂停' if self._paused_flag else '● REC'
+            # 暂停用双竖线而不是 ⏸：后者在 Segoe UI Emoji 里会渲染成异色方块，与胶囊底色撞色
+            label = '‖ 已暂停' if self._paused_flag else '● REC'
         else:
             label = f'● 预览　{self._rect_w} × {self._rect_h}' if self._rect_w else '● 预览'
         font = QFont('Microsoft YaHei', 11, QFont.Bold)
         painter.setFont(font)
         tw = painter.fontMetrics().width(label) + 30
         th = 28
+        # 胶囊：深色描边压住背景杂色，浅阴影让标签从画面里“浮”起来
         painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 46))
+        painter.drawRoundedRect(QRectF(10, 12, tw, th), th / 2.0, th / 2.0)
+        painter.setPen(QPen(QColor(0, 0, 0, 70), 1))
         painter.setBrush(main)
         painter.drawRoundedRect(QRectF(10, 10, tw, th), th / 2.0, th / 2.0)
         painter.setPen(QColor(255, 255, 255))
@@ -1976,10 +3265,11 @@ def _notify_finished(api_port, filename, click_count):
 #  控制面板
 # ═══════════════════════════════════════════════════
 
-def run_control_panel(fps, save_dir, api_port):
+def run_control_panel(fps, save_dir, api_port, quality=QUALITY_DEFAULT):
+    _install_crash_guard()
     app = QApplication.instance() or QApplication(sys.argv)
 
-    recorder = ScreenRecorder(fps=fps, save_dir=save_dir)
+    recorder = ScreenRecorder(fps=fps, save_dir=save_dir, quality=quality)
     state = {'mouse_listener': None}
     border = RecordingBorder()
     overlay = ClickOverlay(recorder)
@@ -2001,62 +3291,96 @@ def run_control_panel(fps, save_dir, api_port):
             self._pick_note = ''
             init_status = _read_status()
             self._last_wake_ts = init_status.get('panel_wake_ts', 0)
+            self._last_stop_req = init_status.get('stop_request_ts', 0)
             self._last_pending_fps = init_status.get('pending_fps')
             self._last_pending_dir = init_status.get('pending_save_dir')
+            self._last_pending_quality = init_status.get('pending_quality')
+            self._deferred_fps = None   # 录制中切档：先挂起，停止后应用
+            self._deferred_quality = None
 
             self.setWindowTitle('屏幕录制控制台')
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-            self.setFixedSize(350, 220)
+            self.setObjectName('panelRoot')
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setFixedSize(372, 224)
             self.setStyleSheet("""
-                QWidget { background:#1f2937; color:#f3f4f6; border-radius:10px; }
-                QLabel { color:#f3f4f6; }
-                QPushButton { padding:6px 10px; border:none; border-radius:6px; font-size:12px; font-weight:600; }
-                QPushButton#btnStart { background:#dc2626; color:#fff; }
+                QWidget { color:#1e293b; font-family:'Microsoft YaHei'; }
+                QLabel { background:transparent; }
+                QPushButton { border:none; border-radius:7px; padding:0 10px;
+                              font-size:12px; font-weight:600; font-family:'Microsoft YaHei'; }
+                /* 标题栏：帧率徽章 + 隐藏 / 退出 */
+                QLabel#title { font-size:12px; color:#64748b; font-weight:600; }
+                QLabel#chip { background:#eef1fe; color:#4f6ef7; font-size:11px;
+                              font-weight:600; border-radius:8px; padding:1px 7px; }
+                QPushButton#btnHide { background:transparent; color:#94a3b8; font-size:13px; padding:0; }
+                QPushButton#btnHide:hover { background:#eef1f6; color:#1e293b; }
+                /* 读数区：状态 + 计时 */
+                QFrame#readout { background:#f5f7fa; border:1px solid #e6ebf3;
+                                 border-radius:10px; }
+                QLabel#status { font-size:13px; font-weight:600; color:#16a34a; }
+                QLabel#timer { font-size:23px; font-weight:600; color:#1e293b;
+                               font-family:Consolas,'Courier New',monospace; }
+                /* 模式分段控件：选中填主色、未选中透明（只换颜色不换文字） */
+                QFrame#seg { background:#f1f4fa; border:1px solid #e6ebf3;
+                             border-radius:9px; }
+                QPushButton#btnModeOn { background:#4f6ef7; color:#fff; }
+                QPushButton#btnModeOn:hover { background:#3b5de7; }
+                QPushButton#btnModeOff { background:transparent; color:#64748b; }
+                QPushButton#btnModeOff:hover { background:#e6ebf6; color:#4f6ef7; }
+                QPushButton#btnModeOn:disabled, QPushButton#btnModeOff:disabled {
+                    background:transparent; color:#cbd5e1; }
+                /* 主操作：开始/停止在左（红→绿）、暂停在右（琥珀，禁用时隐入底色） */
+                QPushButton#btnStart { background:#dc2626; color:#fff; font-size:13px; font-weight:700;
+                                       border-radius:8px; }
                 QPushButton#btnStart:hover { background:#b91c1c; }
-                QPushButton#btnStop { background:#059669; color:#fff; }
+                QPushButton#btnStop { background:#059669; color:#fff; font-size:13px; font-weight:700;
+                                      border-radius:8px; }
                 QPushButton#btnStop:hover { background:#047857; }
-                QPushButton#btnPause { background:#f59e0b; color:#fff; }
-                QPushButton#btnPause:hover { background:#d97706; }
-                QPushButton#btnPause:disabled { background:#4b5563; color:#9ca3af; }
-                QPushButton#btnMode { background:#3b82f6; color:#fff; }
-                QPushButton#btnMode:hover { background:#2563eb; }
-                QPushButton#btnModeOn { background:#2563eb; color:#fff; }
-                QPushButton#btnModeOff { background:#374151; color:#cbd5e1; }
-                QPushButton#btnModeOff:hover { background:#4b5563; }
-                QPushButton#btnModeOn:disabled, QPushButton#btnModeOff:disabled { background:#1f2937; color:#6b7280; }
-                QPushButton#btnHide { background:#4b5563; color:#fff; }
-                QPushButton#btnHide:hover { background:#374151; }
-                QLabel#title { font-size:13px; color:#9ca3af; font-weight:600; }
-                QLabel#status { font-size:13px; color:#fbbf24; font-weight:600; }
-                QLabel#timer { font-size:15px; color:#fff; font-family:monospace; }
+                QPushButton#btnPause { background:#d97706; color:#fff; border-radius:8px; }
+                QPushButton#btnPause:hover { background:#b45309; }
+                QPushButton#btnPause:disabled { background:#eef1f6; color:#cbd5e1; }
+                QLabel#foot { font-size:11px; color:#94a3b8; }
             """)
 
             layout = QVBoxLayout()
-            layout.setContentsMargins(12, 8, 12, 10)
-            layout.setSpacing(6)
+            layout.setContentsMargins(14, 12, 14, 12)
+            layout.setSpacing(9)
 
             tr = QHBoxLayout()
+            tr.setSpacing(6)
             t = QLabel('🎬 录制控制台')
             t.setObjectName('title')
             tr.addWidget(t)
+            self._fps_chip = QLabel(f"{int(getattr(recorder, '_fps', fps))} fps")
+            self._fps_chip.setObjectName('chip')
+            tr.addWidget(self._fps_chip)
+            # 画质档标识（清晰度由编码 CRF 决定，与帧率无关，这里如实展示当前档）
+            self._q_chip = QLabel(QUALITY_PRESETS[recorder.get_quality()]['label'])
+            self._q_chip.setObjectName('chip')
+            self._q_chip.setToolTip('画质档：决定编码质量（清晰度），Web 录制页可切换')
+            tr.addWidget(self._q_chip)
             tr.addStretch()
             hide_btn = QPushButton('—')
             hide_btn.setObjectName('btnHide')
-            hide_btn.setFixedSize(28, 22)
+            hide_btn.setFixedSize(26, 22)
             hide_btn.setCursor(QCursor(Qt.PointingHandCursor))
             hide_btn.setToolTip('隐藏面板（进程保持常驻，Web 端可再次唤醒）')
             hide_btn.clicked.connect(self._on_hide)
             tr.addWidget(hide_btn)
             close_btn = QPushButton('×')
             close_btn.setObjectName('btnHide')
-            close_btn.setFixedSize(28, 22)
+            close_btn.setFixedSize(26, 22)
             close_btn.setCursor(QCursor(Qt.PointingHandCursor))
             close_btn.setToolTip('完全退出面板进程')
             close_btn.clicked.connect(self._on_close)
             tr.addWidget(close_btn)
             layout.addLayout(tr)
 
-            sr = QHBoxLayout()
+            readout = QFrame()
+            readout.setObjectName('readout')
+            sr = QHBoxLayout(readout)
+            sr.setContentsMargins(12, 8, 12, 8)
+            sr.setSpacing(8)
             self._status_lbl = QLabel('● 就绪')
             self._status_lbl.setObjectName('status')
             self._status_lbl.setStyleSheet('color:#10b981;')
@@ -2065,45 +3389,66 @@ def run_control_panel(fps, save_dir, api_port):
             self._timer_lbl = QLabel('00:00')
             self._timer_lbl.setObjectName('timer')
             sr.addWidget(self._timer_lbl)
-            layout.addLayout(sr)
+            layout.addWidget(readout)
 
-            mr = QHBoxLayout()
+            seg = QFrame()
+            seg.setObjectName('seg')
+            mr = QHBoxLayout(seg)
+            mr.setContentsMargins(3, 3, 3, 3)
+            mr.setSpacing(2)
             self._full_btn = QPushButton('📺 全屏')
             self._full_btn.setObjectName('btnModeOn')
             self._full_btn.setToolTip('录制整个屏幕')
+            self._full_btn.setFixedHeight(28)
+            self._full_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._full_btn.clicked.connect(self._set_full_mode)
-            mr.addWidget(self._full_btn)
+            mr.addWidget(self._full_btn, 1)
             self._win_btn = QPushButton('📋 选择窗口')
             self._win_btn.setObjectName('btnModeOff')
             self._win_btn.setToolTip('弹出窗口列表，点选要录制的窗口')
+            self._win_btn.setFixedHeight(28)
+            self._win_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._win_btn.clicked.connect(self._pick_from_list)
             self._win_btn.setVisible(False)  # 按需求仅保留“活动窗口”入口
-            mr.addWidget(self._win_btn)
+            mr.addWidget(self._win_btn, 1)
             self._active_btn = QPushButton('🎯 活动窗口')
             self._active_btn.setObjectName('btnModeOff')
             self._active_btn.setToolTip('点后面板隐藏并倒计时3秒，自动录制当前最前面的窗口')
+            self._active_btn.setFixedHeight(28)
+            self._active_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._active_btn.clicked.connect(self._pick_active)
-            mr.addWidget(self._active_btn)
+            mr.addWidget(self._active_btn, 1)
             self._web_btn = QPushButton('🌐 网页区域')
             self._web_btn.setObjectName('btnModeOff')
             self._web_btn.setToolTip('只录窗口内的网页内容，自动排除浏览器标签栏/地址栏（Firefox/Chrome/Edge）')
+            self._web_btn.setFixedHeight(28)
+            self._web_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._web_btn.clicked.connect(self._pick_web_area)
-            mr.addWidget(self._web_btn)
-            layout.addLayout(mr)
+            mr.addWidget(self._web_btn, 1)
+            layout.addWidget(seg)
 
             ar = QHBoxLayout()
+            ar.setSpacing(8)
             self._start_btn = QPushButton('● 开始录制')
             self._start_btn.setObjectName('btnStart')
             self._start_btn.setToolTip('开始录制；录制中点击则停止并保存文件')
+            self._start_btn.setFixedHeight(38)
+            self._start_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._start_btn.clicked.connect(self._on_start)
-            ar.addWidget(self._start_btn)
-            self._pause_btn = QPushButton('⏸ 暂停')
+            ar.addWidget(self._start_btn, 1)
+            self._pause_btn = QPushButton('暂停')
             self._pause_btn.setObjectName('btnPause')
             self._pause_btn.setToolTip('暂停/继续：冻结画面但不停止，点“继续”后接着录（暂停时段不写入视频）')
+            self._pause_btn.setFixedSize(104, 38)
+            self._pause_btn.setCursor(QCursor(Qt.PointingHandCursor))
             self._pause_btn.clicked.connect(self._on_pause)
             self._pause_btn.setEnabled(False)
             ar.addWidget(self._pause_btn)
             layout.addLayout(ar)
+
+            foot = QLabel('拖动面板可移动 · 隐藏后进程常驻')
+            foot.setObjectName('foot')
+            layout.addWidget(foot)
 
             self.setLayout(layout)
 
@@ -2112,21 +3457,28 @@ def run_control_panel(fps, save_dir, api_port):
             vg = QApplication.primaryScreen().virtualGeometry()
             if saved_pos and isinstance(saved_pos, dict):
                 try:
-                    px = int(saved_pos.get('x', vg.x() + vg.width() - 320))
+                    px = int(saved_pos.get('x', vg.x() + vg.width() - 392))
                     py = int(saved_pos.get('y', vg.y() + 20))
                     px = max(vg.x(), min(px, vg.x() + vg.width() - self.width()))
                     py = max(vg.y(), min(py, vg.y() + vg.height() - self.height()))
                     self.move(px, py)
                 except Exception:
-                    self.move(vg.x() + vg.width() - 320, vg.y() + 20)
+                    self.move(vg.x() + vg.width() - 392, vg.y() + 20)
             else:
-                self.move(vg.x() + vg.width() - 320, vg.y() + 20)
+                self.move(vg.x() + vg.width() - 392, vg.y() + 20)
 
             self._ui_timer = QTimer(self)
             self._ui_timer.timeout.connect(self._update_timer)
+            # 准备中轮询：等抓帧时间轴真正建立后再把计时器从 00:00 放行
+            self._start_wait_timer = QTimer(self)
+            self._start_wait_timer.timeout.connect(self._poll_started)
+            self._start_wait_polls = 0
             self._rec_start_time = 0
             self._paused_accum = 0
             self._pause_start = 0
+
+            # 迷你状态条：录制中点“—”隐藏面板时替代面板常驻（REC+计时+暂停/停止/恢复）
+            self._mini = _MiniRecBar(self)
 
             self._click_timer = QTimer(self)
             self._click_timer.timeout.connect(self._update_click_display)
@@ -2136,8 +3488,17 @@ def run_control_panel(fps, save_dir, api_port):
             self._status_poll.timeout.connect(self._poll_status_file)
             self._status_poll.start(500)
 
-            _write_status(panel_visible=True, panel_pid=os.getpid())
+            _write_status(panel_visible=True, panel_pid=os.getpid(),
+                          panel_script_mtime=_script_mtime())
             self._update_status()
+
+        def paintEvent(self, e):
+            # 顶层半透明 + 自绘圆角卡片：浅色玻璃底 + 1px 描边（白卡 + 灰蓝边，与全站卡片一致）
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(QPen(QColor(226, 232, 240), 1))
+            p.setBrush(QColor(255, 255, 255, 248))
+            p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14)
 
         def mousePressEvent(self, e):
             if e.button() == Qt.LeftButton:
@@ -2159,25 +3520,40 @@ def run_control_panel(fps, save_dir, api_port):
 
         def _poll_status_file(self):
             s = _read_status()
+            sr = s.get('stop_request_ts', 0)
+            if sr and sr != self._last_stop_req:
+                self._last_stop_req = sr
+                if recorder.is_running():
+                    # 网页上点“停止录制”：走和面板按钮完全相同的收尾流程（writer 正常落盘）
+                    self._on_stop()
+                    self._flash_status('● 已通过网页停止并保存', '#10b981')
             wake = s.get('panel_wake_ts', 0)
             if wake and wake != self._last_wake_ts:
                 self._last_wake_ts = wake
+                self._mini.hide()     # 唤醒面板时收起迷你条，避免两个状态框同时出现
                 if not self.isVisible():
                     self.show()
                     self.raise_()
                     self.activateWindow()
                 if recorder.is_running():    # 录制中唤醒：恢复标注工具条
                     ann_toolbar.show_beside(self)
-                _write_status(panel_visible=True, panel_pid=os.getpid())
+                _write_status(panel_visible=True, panel_pid=os.getpid(),
+                              panel_script_mtime=_script_mtime())
             pf = s.get('pending_fps')
             if pf and pf != self._last_pending_fps:
                 self._last_pending_fps = pf
                 if not recorder.is_running():
                     try:
                         recorder.set_fps(int(pf))
-                        self._flash_status(f'● FPS 已更新为 {pf}', '#10b981')
+                        self._fps_chip.setText(f'{int(pf)} fps')
+                        self._flash_status(f'● 帧率已切换为 {int(pf)} fps', '#10b981')
                     except Exception:
                         pass
+                else:
+                    # 录制中改档无法即时生效（正在写的文件帧率已固定），先挂起到停止后应用。
+                    # 必须给出提示，否则用户会以为已切档、录出来却毫无差别
+                    self._deferred_fps = int(pf)
+                    self._flash_status(f'● 录制中不可切换，停止后按 {int(pf)} fps', '#f59e0b')
             pd = s.get('pending_save_dir')
             if pd and pd != self._last_pending_dir:
                 self._last_pending_dir = pd
@@ -2188,6 +3564,18 @@ def run_control_panel(fps, save_dir, api_port):
                         self._flash_status('● 保存目录已更新', '#10b981')
                     except Exception:
                         pass
+            pq = s.get('pending_quality')
+            if pq and pq != self._last_pending_quality:
+                self._last_pending_quality = pq
+                label = QUALITY_PRESETS[_snap_quality(pq)]['label']
+                if not recorder.is_running():
+                    recorder.set_quality(pq)
+                    self._q_chip.setText(label)
+                    self._flash_status(f'● 画质已切换为{label}', '#10b981')
+                else:
+                    # 正在写的文件编码参数已固定，停止后生效
+                    self._deferred_quality = pq
+                    self._flash_status(f'● 录制中不可切换，停止后按{label}画质', '#f59e0b')
 
         def _flash_status(self, text, color):
             self._status_lbl.setText(text)
@@ -2368,8 +3756,10 @@ def run_control_panel(fps, save_dir, api_port):
             self._cd = QLabel('3', None,
                               Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
             self._cd.setAlignment(Qt.AlignCenter)
-            self._cd.setStyleSheet("color:#fff;font-size:60px;font-weight:bold;"
-                                   "background:rgba(0,0,0,180);border-radius:16px;")
+            self._cd.setStyleSheet("color:#f8fafc;font-size:64px;font-weight:bold;"
+                                   "font-family:Consolas,'Courier New',monospace;"
+                                   "background:rgba(15,23,42,214);"
+                                   "border:1px solid rgba(148,163,184,.28);border-radius:20px;")
             self._cd.setFixedSize(140, 140)
             self._cd.move((scr.width() - 140) // 2, (scr.height() - 140) // 2)
             self._cd.show()
@@ -2504,60 +3894,93 @@ def run_control_panel(fps, save_dir, api_port):
                 ok = recorder.start_fullscreen()
 
             if ok:
-                self._rec_start_time = time.time()
+                # 准备中：抓屏后端/编码器还没就绪，不能先把 00:00 计时跑起来
+                self._rec_start_time = 0
                 self._paused_accum = 0
                 self._pause_start = 0
+                self._timer_lbl.setText('00:00')
                 self._ui_timer.start(500)
                 self._click_timer.start(500)
+                self._start_wait_polls = 0
+                self._start_wait_timer.start(50)
                 self._update_status()
-                rect = recorder.get_record_rect()
-                if rect:
-                    border.set_recording_rect(*rect)
-                    border.set_state('recording', paused=False)
-                    border.show()
-                    border.raise_()
-                overlay.set_enabled(True)
-                overlay.raise_()
-                ann_toolbar.reset()
-                ann_overlay.enable(True)
-                ann_toolbar.show_beside(self)
-                if state['mouse_listener'] is None:
-                    state['mouse_listener'] = MouseClickListener(on_click=recorder.add_click)
-                    state['mouse_listener'].start()
-                _write_status(recording=True, paused=False, click_count=0,
-                              last_file='', start_time=time.time())
             else:
                 self._status_lbl.setText('启动失败')
                 self._status_lbl.setStyleSheet('color:#ef4444;')
 
-        def _on_pause(self):
+        def _poll_started(self):
+            """准备完成：立刻把计时器对齐视频第一帧，再亮录制边框/点击层/标注工具"""
             if not recorder.is_running():
+                self._start_wait_timer.stop()
+                self._rec_start_time = 0
+                self._update_status()
+                return
+            start_time = recorder.get_start_time()
+            if not start_time:
+                # 抓屏/编码初始化异常时事件不会置位：超时就不再等，别让面板永远停在“准备中”
+                self._start_wait_polls += 1
+                if self._start_wait_polls < 200:
+                    return
+                self._start_wait_timer.stop()
+                self._status_lbl.setText('● 启动超时')
+                self._status_lbl.setStyleSheet('color:#ef4444;')
+                return
+            self._start_wait_timer.stop()
+            self._rec_start_time = start_time
+            self._timer_lbl.setText('00:00')
+            rect = recorder.get_record_rect()
+            if rect:
+                border.set_recording_rect(*rect)
+                border.set_state('recording', paused=False)
+                border.show()
+                border.raise_()
+            overlay.set_enabled(True)
+            overlay.raise_()
+            ann_toolbar.reset()
+            ann_overlay.enable(True)
+            if self.isVisible():
+                ann_toolbar.show_beside(self)
+            else:
+                ann_toolbar.dismiss()
+            if state['mouse_listener'] is None:
+                state['mouse_listener'] = MouseClickListener(on_click=recorder.add_click)
+                state['mouse_listener'].start()
+            _write_status(recording=True, paused=False, click_count=0,
+                          last_file='', start_time=start_time)
+            self._update_status()
+
+        def _on_pause(self):
+            if not recorder.is_running() or not recorder.is_started():
                 return
             if recorder.is_paused():
                 recorder.resume()
                 if self._pause_start:
                     self._paused_accum += time.time() - self._pause_start
                     self._pause_start = 0
-                self._pause_btn.setText('⏸ 暂停')
+                self._pause_btn.setText('暂停')
                 border.set_state('recording', paused=False)
                 overlay.set_enabled(True)
                 overlay.raise_()
+                self._mini.set_paused(False)
                 _write_status(paused=False)
             else:
                 recorder.pause()
                 self._pause_start = time.time()
-                self._pause_btn.setText('▶ 继续')
+                self._pause_btn.setText('继续')
                 border.set_state('recording', paused=True)
                 overlay.set_enabled(False)
+                self._mini.set_paused(True)
                 _write_status(paused=True)
             self._update_status()
 
         def _on_stop(self):
             filepath, click_count = recorder.stop()
+            self._start_wait_timer.stop()
             self._ui_timer.stop()
             self._click_timer.stop()
+            self._rec_start_time = 0
             self._timer_lbl.setText('00:00')
-            self._pause_btn.setText('⏸ 暂停')
+            self._pause_btn.setText('暂停')
             overlay.set_enabled(False)
             ann_toolbar.dismiss()
             ann_overlay.enable(False)
@@ -2567,17 +3990,51 @@ def run_control_panel(fps, save_dir, api_port):
                 state['mouse_listener'].stop()
                 state['mouse_listener'] = None
             self._update_status()
+            if getattr(self, '_deferred_fps', None):
+                # 录制中挂起的切档在此生效（否则用户会以为切了但实际没切）
+                try:
+                    recorder.set_fps(self._deferred_fps)
+                    self._fps_chip.setText(f'{self._deferred_fps} fps')
+                    self._flash_status(f'● 已按 {self._deferred_fps} fps 录制下一段', '#10b981')
+                except Exception:
+                    pass
+                self._deferred_fps = None
+            if getattr(self, '_deferred_quality', None):
+                try:
+                    recorder.set_quality(self._deferred_quality)
+                    self._q_chip.setText(QUALITY_PRESETS[_snap_quality(self._deferred_quality)]['label'])
+                    self._flash_status('● 已按新画质录制下一段', '#10b981')
+                except Exception:
+                    pass
+                self._deferred_quality = None
             if filepath:
                 fn = os.path.basename(filepath)
                 _write_status(recording=False, paused=False, click_count=click_count,
                               last_finished_at=time.time(), last_file=fn)
                 print(f"[录制] 已保存: {filepath} (点击: {click_count})")
                 _notify_finished(api_port, fn, click_count)
+            # 停止来源是迷你条/面板隐藏中被网页停止：收条并恢复完整面板
+            if self._mini.isVisible():
+                self._mini.hide()
+                self.show()
+                self.raise_()
+                self._update_status()
+                _write_status(panel_visible=True, panel_pid=os.getpid(),
+                              panel_script_mtime=_script_mtime())
 
         def _update_status(self):
+            # 帧率徽章跟随“真正落盘的帧率”：抓屏跟不上设定值时如实显示（如 1080p 全屏选 20 实际 ~18）
+            try:
+                self._fps_chip.setText(f"{int(recorder.get_effective_fps())} fps")
+            except Exception:
+                pass
             if recorder.is_running():
-                if recorder.is_paused():
-                    self._status_lbl.setText('⏸ 已暂停')
+                started = recorder.is_started()
+                if not started:
+                    self._status_lbl.setText('◐ 准备中...')
+                    self._status_lbl.setStyleSheet('color:#f59e0b;')
+                elif recorder.is_paused():
+                    self._status_lbl.setText('‖ 已暂停')
                     self._status_lbl.setStyleSheet('color:#f59e0b;')
                 else:
                     self._status_lbl.setText('● 录制中')
@@ -2588,7 +4045,7 @@ def run_control_panel(fps, save_dir, api_port):
                 self._win_btn.setEnabled(False)
                 self._active_btn.setEnabled(False)
                 self._web_btn.setEnabled(False)
-                self._pause_btn.setEnabled(True)
+                self._pause_btn.setEnabled(started)
             else:
                 self._status_lbl.setText('● 就绪')
                 self._status_lbl.setStyleSheet('color:#10b981;')
@@ -2611,6 +4068,8 @@ def run_control_panel(fps, save_dir, api_port):
                 elapsed = 0
             m, s = elapsed // 60, elapsed % 60
             self._timer_lbl.setText(f'{m:02d}:{s:02d}')
+            if self._mini.isVisible():
+                self._mini.set_time(self._timer_lbl.text())
 
         def _update_click_display(self):
             # 仅同步点击数到状态文件（UI 不再展示点击计数）
@@ -2618,10 +4077,25 @@ def run_control_panel(fps, save_dir, api_port):
                 _write_status(click_count=recorder._total_clicks)
 
         def _on_hide(self):
-            """A1: 隐藏面板但保留进程，等待 Web 唤醒（录制继续）"""
+            """A1: 隐藏面板但保留进程，等待 Web 唤醒（录制继续）
+            隐藏后统一收成迷你状态条：录制中带 REC + 计时 + 暂停/停止；
+            就绪态只留「恢复面板」——任何状态点“—”都能找回控制入口，不再凭空消失"""
             self.hide()
             ann_toolbar.dismiss()   # 工具条随面板收起；标注层保持显示（录制继续）
+            self._mini.set_recording(recorder.is_running())
+            self._mini.show_at(self.pos())
             _write_status(panel_visible=False)
+
+        def _mini_restore(self):
+            """迷你条“恢复面板”：收起迷你条，完整控制台回到原位置"""
+            self._mini.hide()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            if recorder.is_running():
+                ann_toolbar.show_beside(self)
+            _write_status(panel_visible=True, panel_pid=os.getpid(),
+                          panel_script_mtime=_script_mtime())
 
         def _on_close(self):
             """D2: 优雅退出：先停录制并等 writer.release()，再退出"""
@@ -2650,8 +4124,10 @@ def run_control_panel(fps, save_dir, api_port):
 
     panel = ControlPanel()
     _exclude_from_capture(panel)
+    _exclude_from_capture(panel._mini)   # 迷你状态条同样不进录屏/截图
     panel.show()
-    _write_status(panel_visible=True, panel_pid=os.getpid())
+    _write_status(panel_visible=True, panel_pid=os.getpid(),
+                  panel_script_mtime=_script_mtime())
     sys.exit(app.exec_())
 
 
@@ -2661,11 +4137,14 @@ def run_control_panel(fps, save_dir, api_port):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fps', type=int, default=15)
+    parser.add_argument('--fps', type=int, default=20)
     parser.add_argument('--save-dir', type=str, required=True)
     parser.add_argument('--api-port', type=int, default=5050)
+    parser.add_argument('--quality', type=str, default=QUALITY_DEFAULT,
+                        choices=list(QUALITY_PRESETS.keys()))
     args = parser.parse_args()
-    run_control_panel(fps=args.fps, save_dir=args.save_dir, api_port=args.api_port)
+    run_control_panel(fps=args.fps, save_dir=args.save_dir, api_port=args.api_port,
+                       quality=args.quality)
 
 
 if __name__ == '__main__':

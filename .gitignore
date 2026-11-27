@@ -19,6 +19,7 @@ cases/_*.json
 
 # runtime data (local only)
 data/config.json
+data/settings.json
 data/localdb/
 data/thumbs/
 data/capture_bodies/
@@ -31,6 +32,9 @@ data/*.sqlite
 
 # certificates / private keys - never commit
 certs/
+
+# 投屏子服务：依赖走 npm install，不进仓库
+node_modules/
 
 # temp & verification artifacts
 temps/

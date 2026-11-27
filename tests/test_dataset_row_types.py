@@ -6,15 +6,18 @@
 import pytest
 
 import dataset
+import settings_store
 
 
 @pytest.fixture(autouse=True)
 def isolate(tmp_path, monkeypatch):
-    """存储路径指到临时目录，别动真实的 data/_datasets"""
+    """存储路径指到临时目录，别动真实的 data/_datasets 与 settings.json"""
     monkeypatch.setattr(dataset, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(dataset, "DATASET_DIR", str(tmp_path / "_datasets"))
-    monkeypatch.setattr(dataset, "ACTIVE_FILE", str(tmp_path / "_dataset_active.json"))
+    old_data_dir = settings_store.data_dir()
+    settings_store.configure(str(tmp_path))
     yield
+    settings_store.configure(old_data_dir)
 
 
 def test_norm_types_align_and_fallback():

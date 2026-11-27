@@ -36,6 +36,7 @@ binaries = []
 hiddenimports = [
     # 项目内部模块（exe 入口按首参动态分派导入，静态分析可能漏掉）
     "engine", "printer", "data_generator", "yaml_checker", "curl2yaml", "scheduler",
+    "settings_store", "dataset",
     "scripts",
     "capture", "capture.engine",
     "recorder_tool", "recorder_tool.control_panel", "recorder_tool.recorder",

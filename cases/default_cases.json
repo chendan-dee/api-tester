@@ -3,7 +3,9 @@
     "用户模块",
     "提取示例",
     "脚本示例",
-    "参数化串联"
+    "参数化串联",
+    "积分商城",
+    "会员管理系统"
   ],
   "name": "接口用例",
   "steps": [
@@ -247,7 +249,7 @@
         "method": "POST",
         "url": "http://pmslink-test.bestwehotel.net/proxy/pms-ex/sso/rest/user/searchShopManager/v1",
         "body": {
-          "storeId": "WYN5180481",
+          "storeId": "${storeId}",
           "status": 1,
           "currentPage": 1,
           "pageSize": 100
@@ -261,6 +263,24 @@
         },
         "timeout": 60
       }
+    },
+    {
+      "name": "查询余额变动明细",
+      "request": {
+        "method": "POST",
+        "url": "https://bizapi.jd.com/api/price/getBalanceDetail",
+        "body": {
+          "token": "odafFegMfztqk3F4wXs8GToEl",
+          "startDate": "20261001",
+          "endDate": "20261031",
+          "pageNum": "${numPage}",
+          "pageSize": "100"
+        },
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      },
+      "group": "积分商城"
     }
   ]
 }

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+import shutil
 import socket
 import sqlite3
 import threading
@@ -29,6 +30,15 @@ if sys.stdout is None:
     sys.stdout = open(os.devnull, 'w')
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
+
+# Windows 中文环境下控制台/重定向文件默认是 GBK：print 报文里的 •、emoji 之类字符
+# 会抛 UnicodeEncodeError，轻则日志少一行，重则把整个请求打成 500。
+# 统一按 UTF-8 输出，编码不了的字符替换掉，绝不让 print 影响业务。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ── 打包版内部命令分派 ──────────────────────────────
 # 打包后录制面板 / 录制器 / mitmdump 子进程复用 exe 本体（目标机可能没有
@@ -304,6 +314,12 @@ if _IS_EXE:
 DATA_DIR = os.path.join(_app_root, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ── 统一设置存储：data/settings.json ──
+# 原先分散的 12 个配置文件（变量/环境/数据源/代理 Mock/远程映射/设备名/待办分类…）
+# 已并入这一个文件，一项一个顶层段落；抓包引擎与录制面板等跨进程文件仍保持独立。
+import settings_store as _settings
+_settings.configure(DATA_DIR)
+
 # 迁移旧数据：从 ~/.api-tester/ 和旧 cases/ 迁移到 data/（兼容旧版）
 _old_data_sources = []
 # 旧版 exe 的数据在 ~/.api-tester/
@@ -315,11 +331,15 @@ _old_cases_dir = os.path.join(_app_root, "cases")
 if os.path.isdir(_old_cases_dir):
     _old_data_sources.append(_old_cases_dir)
 
+# 已并入 settings.json 的旧文件不再从旧目录复制，否则每次启动都会把旧副本“复活”到 data/
+_merged_legacy = _settings.merged_legacy_files()
 for _src_dir in _old_data_sources:
     for _fname in ["_variables.json", "_workbench_todos.json", "_workbench_notes.json",
                    "_workbench_quick_notes.json",
                    "_transfer_save_dir.txt", "_device_names.json",
                    "_mock_proxy.json", "_remote_proxy.json"]:
+        if _fname in _merged_legacy:
+            continue
         _old = os.path.join(_src_dir, _fname)
         _new = os.path.join(DATA_DIR, _fname)
         if os.path.exists(_old) and not os.path.exists(_new):
@@ -328,6 +348,12 @@ for _src_dir in _old_data_sources:
                 shutil.copy2(_old, _new)
             except Exception:
                 pass
+
+# 旧版分散配置一次性并入 data/settings.json（逐项校验通过后删源文件）
+try:
+    _settings.migrate_legacy(print)
+except Exception as _e:
+    print(f"  [settings] 迁移失败（继续按旧文件使用）：{_e}")
 
 # 防止路径遍历：校验文件名解析后仍在 CASES_DIR 内
 def _safe_filepath(filename):
@@ -1025,6 +1051,41 @@ def step_save():
 
     _dump_doc(filepath, data)
     return jsonify({"ok": True, "index": new_index, "total": len(steps)})
+
+
+@app.route("/api/step/rename", methods=["POST"])
+def step_rename():
+    """只改接口名称（顶部标题框失焦自动保存用）：不动 request/断言等其它字段
+
+    与 /api/step/save 分开的理由：表单里其它字段可能正改到一半（例如 Body 的 JSON
+    还没闭合），改名不该因为那些草稿报错而不落盘。
+    """
+    payload = request.get_json(silent=True) or {}
+    filename = payload.get("file", "")
+    name = str(payload.get("name") or "").strip()
+    try:
+        idx = int(payload.get("index", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "步骤序号无效，必须是整数"}), 400
+    if not filename:
+        return jsonify({"ok": False, "error": "未指定文件"}), 400
+    if not name:
+        return jsonify({"ok": False, "error": "接口名称不能为空"}), 400
+    filepath = _safe_filepath(filename)
+    if not filepath or not os.path.exists(filepath):
+        return jsonify({"ok": False, "error": "用例库尚未创建，请先保存一次"}), 404
+    try:
+        data = _load_doc(filepath)
+    except json.JSONDecodeError as e:
+        return jsonify({"ok": False, "error": f"文件格式错误: {e}"}), 400
+    steps = (data or {}).get("steps") if isinstance(data, dict) else None
+    if not isinstance(steps, list) or not (1 <= idx <= len(steps)):
+        return jsonify({"ok": False, "error": f"步骤 {idx} 不存在"}), 404
+    if not isinstance(steps[idx - 1], dict):
+        return jsonify({"ok": False, "error": "步骤格式不正确"}), 400
+    steps[idx - 1]["name"] = name
+    _dump_doc(filepath, data)
+    return jsonify({"ok": True, "index": idx, "name": name, "total": len(steps)})
 
 
 # ═══════════════════════════════════════════════════
@@ -2265,6 +2326,180 @@ def preview_extract():
         "headers": fields,
         "rows": rows,
         "total": len(arr)
+    })
+
+
+def _set_url_param(url, key, value):
+    """把查询参数 key 设为 value：已存在就替换（去掉重复项），不存在就追加。
+    不用 parse_qsl/urlencode 重建，避免把 ${var} 这类未解析占位符编成 %24%7B…"""
+    frag = ""
+    if "#" in url:
+        url, frag = url.split("#", 1)
+        frag = "#" + frag
+    base, _, qs = url.partition("?")
+    out, hit = [], False
+    from urllib.parse import unquote
+    for pair in [p for p in qs.split("&") if p]:
+        k_raw = pair.split("=", 1)[0]
+        try:
+            k = unquote(k_raw)
+        except Exception:
+            k = k_raw
+        if k == key:
+            if not hit:
+                out.append(f"{key}={value}")
+                hit = True
+            continue   # 重复的同名参数丢掉，服务端才不会取到旧值
+        out.append(pair)
+    if not hit:
+        out.append(f"{key}={value}")
+    return base + (("?" + "&".join(out)) if out else "") + frag
+
+
+@app.route("/api/paginate-extract", methods=["POST"])
+def paginate_extract():
+    """分页遍历：页码自增反复请求同一个 step，把每页的数组汇总成一张表。
+
+    body:
+      file             — 用例文件名
+      index            — step 序号（从 1 开始）
+      array_path       — 每页取哪个数组，如 data.list（留空 = 响应本身就是数组）
+      fields           — 列字段，留空则自动取第一页元素的全部字段
+      page_param       — 页码参数名，默认 pageNum
+      start_page       — 起始页，默认 1
+      page_size        — 每页条数（>0 才注入，用来判断最后一页）
+      page_size_param  — 条数参数名，默认 pageSize
+      page_in          — query / body（页码放 URL 还是 JSON Body）
+      stop_mode        — empty（空数组停）/ short（少于每页条数停）/ fixed（跑满 max_pages）
+      max_pages        — 最多翻几页，1..100
+
+    返回：headers / rows / total / pages / page_counts / page_status / stop_reason
+    """
+    payload = request.get_json(silent=True) or {}
+    filename = payload.get("file", "")
+    try:
+        idx = int(payload.get("index", 0))
+        start_page = int(payload.get("start_page") or 1)
+        page_size = int(payload.get("page_size") or 0)
+        max_pages = int(payload.get("max_pages") or 50)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "步骤序号 / 页码 / 条数必须是整数"}), 400
+    array_path = str(payload.get("array_path") or "").strip()
+    fields = payload.get("fields") or []
+    if isinstance(fields, str):
+        import re as _re
+        fields = [f.strip() for f in _re.split(r"[,，\n]", fields) if f.strip()]
+    headers = [str(f) for f in fields]
+    page_param = str(payload.get("page_param") or "pageNum").strip() or "pageNum"
+    page_size_param = str(payload.get("page_size_param") or "pageSize").strip()
+    page_in = "body" if str(payload.get("page_in") or "query").strip() == "body" else "query"
+    stop_mode = str(payload.get("stop_mode") or "empty").strip()
+    if stop_mode == "short" and page_size <= 0:   # 没给每页条数就退化：空数组拍停，不然会跑到上限
+        stop_mode = "empty"
+    max_pages = max(1, min(max_pages, 100))   # 硬上限：再多就不是“预览”而是压测了
+    start_page = max(0, start_page)
+
+    filepath = _safe_filepath(filename)
+    if not filepath:
+        return jsonify({"ok": False, "error": "非法文件名"}), 400
+    try:
+        doc = _load_doc(filepath)
+    except json.JSONDecodeError as e:
+        return jsonify({"ok": False, "error": f"文件格式错误: {e}"}), 400
+    steps = doc.get("steps", [])
+    if idx < 1 or idx > len(steps):
+        return jsonify({"ok": False, "error": f"步骤 {idx} 不存在"}), 404
+    step = steps[idx - 1]
+    req_cfg = dict(step.get("request") or {})
+    step_mock = step.get("mock")
+
+    import engine as E
+    _vars = _load_variables_values()
+
+    all_rows, page_counts, page_status = [], [], []
+    stop_reason, pages = "", 0
+    for n in range(max_pages):
+        page_no = start_page + n
+        req = dict(req_cfg)
+        req["url"] = _set_url_param(req.get("url") or "", page_param, page_no)
+        if page_size > 0 and page_size_param:
+            req["url"] = _set_url_param(req["url"], page_size_param, page_size)
+        if page_in == "body":
+            body = req.get("body")
+            if isinstance(body, dict):
+                body = dict(body)
+                body[page_param] = page_no
+                if page_size > 0 and page_size_param:
+                    body[page_size_param] = page_size
+                req["body"] = body
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = E.do_request(req, _vars, mock=step_mock)
+
+        if result.get("error"):
+            if n == 0:
+                return jsonify({"ok": False, "error": f"第 {page_no} 页请求失败: {result['error']}"}), 400
+            stop_reason = f"第 {page_no} 页请求失败，已保留前 {pages} 页"
+            break
+        resp_json = result.get("resp_json")
+        if resp_json is None:
+            if n == 0:
+                return jsonify({"ok": False, "error": "第 1 页响应不是 JSON，无法按数组汇总"}), 400
+            stop_reason = f"第 {page_no} 页响应不是 JSON，已保留前 {pages} 页"
+            break
+
+        if array_path and '[*]' in array_path:
+            arr = E.get_by_path_with_merge(resp_json, array_path)
+        else:
+            arr = E.get_by_path(resp_json, array_path) if array_path else resp_json
+        if not isinstance(arr, list):
+            if n == 0:
+                return jsonify({
+                    "ok": False,
+                    "error": f"路径 '{array_path}' 不是数组（实际类型: {type(arr).__name__}）",
+                    "array_suggestions": [s[0] for s in _find_array_paths(resp_json)],
+                }), 400
+            stop_reason = f"第 {page_no} 页路径不是数组，已保留前 {pages} 页"
+            break
+
+        pages += 1
+        page_counts.append(len(arr))
+        page_status.append(result.get("status_code"))
+        # 字段留空：拿第一页第一个元素的字段当表头（只取一层）
+        if not headers and arr and isinstance(arr[0], dict):
+            headers = [str(k) for k in arr[0].keys()]
+        for item in arr:
+            if isinstance(item, dict):
+                row = []
+                for f in headers:
+                    val = E.get_by_path(item, f) if "." in f else item.get(f)
+                    if val is None:
+                        row.append("")
+                    elif isinstance(val, (dict, list)):
+                        row.append(json.dumps(val, ensure_ascii=False))
+                    else:
+                        row.append(str(val))
+                all_rows.append(row)
+            else:
+                all_rows.append([str(item)])
+
+        if stop_mode == "empty" and len(arr) == 0:
+            stop_reason = f"第 {page_no} 页返回空数组"
+            break
+        if stop_mode == "short" and page_size > 0 and len(arr) < page_size:
+            stop_reason = f"第 {page_no} 页只有 {len(arr)} 条（< 每页 {page_size}）"
+            break
+    else:
+        stop_reason = f"已跑满最大页数 {max_pages}"
+
+    return jsonify({
+        "ok": True,
+        "headers": headers,
+        "rows": all_rows,
+        "total": len(all_rows),
+        "pages": pages,
+        "page_counts": page_counts,
+        "page_status": page_status,
+        "stop_reason": stop_reason or "完成",
     })
 
 
@@ -4376,36 +4611,26 @@ def _file_lock(path):
 #  变量持久化存储（预设值）
 # ═══════════════════════════════════════════════════
 
-VARS_FILE = os.path.join(DATA_DIR, "_variables.json")
-
-
+# 变量持久化：存于 data/settings.json 的 variables 段落（原 data/_variables.json）
 def _load_variables():
     """加载持久化的变量字典（含元数据）
     新格式: {name: {value: ..., saved_at: ...}}
     旧格式: {name: value} 会自动迁移
     混合格式: 逐个 key 迁移
     """
-    if not os.path.exists(VARS_FILE):
+    raw = _settings.load("variables", {})
+    if not isinstance(raw, dict) or not raw:
         return {}
-    with _file_lock(VARS_FILE):
-        try:
-            with open(VARS_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if not raw:
-                return {}
-            # 逐个 key 检测并迁移旧格式
-            needs_save = False
-            for k, v in list(raw.items()):
-                if isinstance(v, str):
-                    from datetime import datetime as _dt
-                    raw[k] = {"value": v, "saved_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
-                    needs_save = True
-            if needs_save:
-                with open(VARS_FILE, "w", encoding="utf-8") as fw:
-                    json.dump(raw, fw, ensure_ascii=False, indent=2)
-            return raw
-        except (json.JSONDecodeError, IOError):
-            return {}
+    # 逐个 key 检测并迁移旧格式
+    needs_save = False
+    for k, v in list(raw.items()):
+        if isinstance(v, str):
+            from datetime import datetime as _dt
+            raw[k] = {"value": v, "saved_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+            needs_save = True
+    if needs_save:
+        _settings.save("variables", raw)
+    return raw
 
 
 def _load_variables_values():
@@ -4429,29 +4654,18 @@ def _load_variables_values():
 
 
 def _save_variables(variables):
-    """保存变量字典到文件"""
-    with _file_lock(VARS_FILE):
-        with open(VARS_FILE, "w", encoding="utf-8") as f:
-            json.dump(variables, f, ensure_ascii=False, indent=2)
+    """保存变量字典（settings.json 的 variables 段落）"""
+    _settings.save("variables", variables)
 
 
 # ═══════════════════════════════════════════════════
 #  环境变量（多环境切换：变量取值 环境 > 预设）
 # ═══════════════════════════════════════════════════
 
-ENVS_FILE = os.path.join(DATA_DIR, "_environments.json")
-
-
+# 环境配置：存于 data/settings.json 的 environments 段落（原 data/_environments.json）
 def _load_environments():
     """加载环境配置：{"active": 环境 id, "envs": [{"id", "name", "vars": [{"key", "value", "enabled"}]}]}"""
-    if not os.path.exists(ENVS_FILE):
-        return {"active": "", "envs": []}
-    with _file_lock(ENVS_FILE):
-        try:
-            with open(ENVS_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {"active": "", "envs": []}
+    raw = _settings.load("environments", {"active": "", "envs": []})
     if not isinstance(raw, dict):
         return {"active": "", "envs": []}
     envs = raw.get("envs")
@@ -4557,10 +4771,8 @@ def api_batch_export_xlsx():
 
 
 def _save_environments(data):
-    """写入环境配置文件"""
-    with _file_lock(ENVS_FILE):
-        with open(ENVS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    """写入环境配置（settings.json 的 environments 段落）"""
+    _settings.save("environments", data)
 
 
 def _active_env():
@@ -4852,6 +5064,24 @@ def dataset_save():
         return jsonify({"ok": False, "error": str(ex)}), 500
 
 
+@app.route("/api/dataset/rename", methods=["POST"])
+def dataset_rename():
+    """重命名数据集（标题框改完失焦自动保存）"""
+    import dataset as DS
+    body = request.get_json(silent=True) or {}
+    old = str(body.get("old") or "").strip()
+    new = str(body.get("new") or "").strip()
+    if not old or not new:
+        return jsonify({"ok": False, "error": "数据集名称不能为空"}), 400
+    try:
+        data = DS.rename(old, new)
+        return jsonify({"ok": True, "dataset": data, "active": DS.active_name()})
+    except ValueError as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 400
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
 @app.route("/api/dataset/active", methods=["POST"])
 def dataset_set_active():
     """设为当前数据集 / 取消（name 传空）"""
@@ -4912,11 +5142,9 @@ def set_seq_variable_step():
 #  工作台：待办事项 + 笔记
 # ═══════════════════════════════════════════════════
 
-TODOS_FILE = os.path.join(DATA_DIR, "_workbench_todos.json")
 NOTES_FILE = os.path.join(DATA_DIR, "_workbench_notes.json")
-# 计划分类集合单独存：todos 是数组结构（旧数据），不能塞对象进去，
-# 因此分类表另存一个文件，端点也只管分类的增删改
-TODO_CATS_FILE = os.path.join(DATA_DIR, "_workbench_todo_cats.json")
+# 待办与计划分类：存于 data/settings.json 的 todos / todo_cats 段落
+# （todos 是数组结构，分类表另占一段，端点也只管分类的增删改）
 # 随心记：右栏速记（与「记事本」的 notes 分开存，不混进笔记列表）
 QUICK_NOTES_FILE = os.path.join(DATA_DIR, "_workbench_quick_notes.json")
 DEFAULT_TODO_CATS = ["测试", "开发", "日常", "学习", "会议"]
@@ -4924,34 +5152,20 @@ DEFAULT_TODO_CATS = ["测试", "开发", "日常", "学习", "会议"]
 
 def _load_todos():
     """加载待办列表"""
-    if os.path.exists(TODOS_FILE):
-        with _file_lock(TODOS_FILE):
-            try:
-                with open(TODOS_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
-    return []
+    todos = _settings.load("todos", [])
+    return todos if isinstance(todos, list) else []
 
 
 def _save_todos(todos):
     """保存待办列表"""
-    with _file_lock(TODOS_FILE):
-        with open(TODOS_FILE, "w", encoding="utf-8") as f:
-            json.dump(todos, f, ensure_ascii=False, indent=2)
+    _settings.save("todos", todos)
 
 
 def _load_todo_cats():
-    """加载计划分类集合（文件缺失时返回内置默认值，不写盘）"""
-    if os.path.exists(TODO_CATS_FILE):
-        with _file_lock(TODO_CATS_FILE):
-            try:
-                with open(TODO_CATS_FILE, "r", encoding="utf-8") as f:
-                    cats = json.load(f)
-                if isinstance(cats, list):
-                    return [str(c) for c in cats if str(c).strip()]
-            except (json.JSONDecodeError, IOError):
-                pass
+    """加载计划分类集合（无记录时返回内置默认值，不写盘）"""
+    cats = _settings.load("todo_cats", None)
+    if isinstance(cats, list):
+        return [str(c) for c in cats if str(c).strip()]
     return list(DEFAULT_TODO_CATS)
 
 
@@ -4964,9 +5178,7 @@ def _save_todo_cats(cats):
             continue
         seen.add(name)
         clean.append(name)
-    with _file_lock(TODO_CATS_FILE):
-        with open(TODO_CATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(clean, f, ensure_ascii=False, indent=2)
+    _settings.save("todo_cats", clean)
     return clean
 
 
@@ -5140,7 +5352,8 @@ def save_quick_notes():
 #  代理 Mock：接收抓包工具转发的请求，返回配置的 mock 数据
 # ═══════════════════════════════════════════════════
 
-MOCK_PROXY_FILE = os.path.join(DATA_DIR, "_mock_proxy.json")
+# 代理 Mock 配置：存于 data/settings.json 的 mock_proxy 段落（原 data/_mock_proxy.json）
+# 与抓包改包规则库 _capture_mock.json 完全分离：抓包改包不影响代理 Mock，反之亦然
 
 # 代理请求日志（写入文件，按天分割）
 LOGS_DIR = os.path.join(_app_root, "logs")
@@ -5151,16 +5364,43 @@ def _cleanup_old_logs():
     try:
         now = time.time()
         for f in os.listdir(LOGS_DIR):
-            if f.startswith("proxy_") and f.endswith(".json"):
+            if (f.startswith("proxy_") and f.endswith(".json")) or \
+                    (f.startswith("proxy_debug_") and f.endswith(".log")):
                 fp = os.path.join(LOGS_DIR, f)
                 if os.path.isfile(fp) and (now - os.path.getmtime(fp)) > 7 * 86400:
                     os.remove(fp)
     except Exception as e:
         print(f"[Logs] 清理旧日志失败: {e}")
 
+def _save_proxy_debug(kind, client_ip, detail):
+    """代理链路诊断日志（按行追加，不进 UI 请求日志）
+
+    用途：手机 / 第三方向导排查——域名未配远程映射时走纯隧道，不会写请求日志，
+    只有这里能证明「请求到过代理、目标是谁」。
+    """
+    try:
+        path = os.path.join(LOGS_DIR, "proxy_debug_%s.log" % datetime.now().strftime("%Y-%m-%d"))
+        line = "%s\t%s\t%s\t%s\n" % (
+            datetime.now().strftime("%H:%M:%S"),
+            client_ip or "-",
+            kind,
+            detail,
+        )
+        with _file_lock(path + ".lock"):
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception as e:
+        print(f"[Logs] 写入诊断日志失败: {e}")
+
 def _save_proxy_log(log_entry):
     """将日志追加到当天的日志文件"""
     try:
+        # 来源地址：便于区分手机 / 本机 IDE（5051 拦截的 HTTPS 无请求上下文，由调用方显式传入）
+        if not log_entry.get("client_ip"):
+            try:
+                log_entry["client_ip"] = request.remote_addr or ""
+            except RuntimeError:
+                pass
         today = datetime.now().strftime("%Y-%m-%d")
         log_file = os.path.join(LOGS_DIR, f"proxy_{today}.json")
         with _file_lock(log_file):
@@ -5218,27 +5458,222 @@ def _mock_path_match(pattern, path):
     return pattern == (path or "")
 
 
-def _load_mock_proxy():
-    if os.path.exists(MOCK_PROXY_FILE):
-        with _file_lock(MOCK_PROXY_FILE):
+# ═══════════════════════════════════════════════════
+#  报文级入参匹配：同一路径下按请求体字段挑不同的响应报文（只对 POST 生效）
+#  命中才返回；一张映射里只要配了条件，不命中就不接管（回源真实请求）
+# ═══════════════════════════════════════════════════
+
+def _mock_when_empty(when):
+    """when 里没有任何有效条件 = 兜底报文"""
+    if not isinstance(when, dict):
+        return True
+    if when.get("json"):
+        return False
+    if str(when.get("contains") or "").strip():
+        return False
+    if str(when.get("regex") or "").strip():
+        return False
+    return True
+
+
+def _mock_req_text(body_bytes):
+    """请求体转文本（二进制按 utf-8 容错解码）"""
+    if body_bytes is None:
+        return ""
+    if isinstance(body_bytes, (bytes, bytearray)):
+        return bytes(body_bytes).decode("utf-8", "ignore")
+    return str(body_bytes)
+
+
+def _mock_body_obj(body_bytes):
+    """请求体解析成对象：JSON / urlencoded 表单；解析不了（含大包、multipart）返回 None"""
+    text = _mock_req_text(body_bytes).strip()
+    if not text or len(text) > 1048576 or text.startswith("--"):
+        return None
+    if text[:1] in ("{", "["):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return None
+    if "=" in text and "\n" not in text:
+        try:
+            from urllib.parse import parse_qsl
+            pairs = parse_qsl(text, keep_blank_values=True)
+            if pairs:
+                return dict(pairs)
+        except Exception:
+            return None
+    return None
+
+
+_NOT_FOUND = object()
+
+
+def _mock_path_value(data, path):
+    """按 a.b.c / a.b[0].c 取单个值；取不到返回 _NOT_FOUND"""
+    cur = data
+    for seg in re.findall(r"\[\d+\]|[^.\[\]]+", path or ""):
+        if seg.startswith("["):
             try:
-                with open(MOCK_PROXY_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return {"mappings": []}
-    return {"mappings": []}
+                idx = int(seg[1:-1])
+            except ValueError:
+                return _NOT_FOUND
+            if isinstance(cur, list) and -len(cur) <= idx < len(cur):
+                cur = cur[idx]
+            else:
+                return _NOT_FOUND
+        elif isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        else:
+            return _NOT_FOUND
+    return cur
+
+
+def _mock_val_same(a, b):
+    """宽松相等：数字和字符串互通（前端表单里的 1 与 JSON 里的 1 视为同一个）"""
+    if a is b:
+        return True
+    if isinstance(a, bool) or isinstance(b, bool):
+        return bool(a) == bool(b)
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return float(a) == float(b)
+    return str(a) == str(b)
+
+
+def _mock_cond_ok(val, cond, found=True):
+    """单个值是否满足条件（op 缺省 eq）"""
+    op = str(cond.get("op") or "eq").lower()
+    exp = cond.get("value")
+    if op == "exists":
+        return found
+    if op == "notexists":
+        return not found
+    if not found:
+        return False
+    if isinstance(val, list):
+        # 取到的值本身是数组（如 {"bizType":[1,2]}）：任一元素满足就算命中
+        return any(_mock_cond_ok(x, cond) for x in val)
+    if op == "eq":
+        return _mock_val_same(val, exp)
+    if op == "ne":
+        return not _mock_val_same(val, exp)
+    if op == "in":
+        cands = exp if isinstance(exp, list) else [x.strip() for x in str(exp or "").split(",")]
+        return any(_mock_val_same(val, x) for x in cands)
+    if op in ("contains", "like"):
+        return str(exp or "") in (val if isinstance(val, str) else str(val))
+    if op == "regex":
+        try:
+            return re.search(str(exp or ""), str(val)) is not None
+        except re.error:
+            return False
+    if op in ("gt", "lt", "ge", "le"):
+        try:
+            a, b = float(val), float(exp)
+        except (TypeError, ValueError):
+            return False
+        return {"gt": a > b, "lt": a < b, "ge": a >= b, "le": a <= b}[op]
+    return _mock_val_same(val, exp)
+
+
+def _mock_when_match(when, body_bytes):
+    """报文 when 条件是否全部命中（只比对请求体）"""
+    j_conds = when.get("json") or []
+    if j_conds:
+        obj = _mock_body_obj(body_bytes)
+        if obj is None:
+            return False
+        for c in j_conds:
+            if not isinstance(c, dict):
+                return False
+            val = _mock_path_value(obj, c.get("path"))
+            if not _mock_cond_ok(val, c, val is not _NOT_FOUND):
+                return False
+    text = _mock_req_text(body_bytes)
+    kw = str(when.get("contains") or "").strip()
+    if kw:
+        # 先原文比；不中再按「去掉所有空白」比一次（JSON 格式化后的空格不该让人白填条件）
+        if kw not in text and re.sub(r"\s+", "", kw) not in re.sub(r"\s+", "", text):
+            return False
+    rx = str(when.get("regex") or "").strip()
+    if rx:
+        try:
+            if not re.search(rx, text):
+                return False
+        except re.error:
+            return False
+    return True
+
+
+def _mock_active_response(mapping, responses):
+    """手动选中的那条报文（active_response，历史行为）"""
+    try:
+        idx = int(mapping.get("active_response") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    return responses[max(0, min(idx, len(responses) - 1))]
+
+
+def _mock_pick_response(mapping, method, body_bytes=b""):
+    """挑响应报文（只对 POST 按请求体入参条件挑），返回 (报文, source)
+
+    报文  = 命中的报文（多条都命中时按报文顺序取第一条）/ 非 POST 或纯老配置时是手动选中的 / None = 不接管
+    source= 'when' 按入参命中 / 'active' 按手动选中 / 'none' 一条都没命中（调用方回源真实请求）
+    """
+    responses = mapping.get("responses")
+    if not (isinstance(responses, list) and responses):
+        return None, "none"
+    if str(method or "").upper() != "POST":
+        return _mock_active_response(mapping, responses), "active"
+    for r in responses:
+        if not isinstance(r, dict):
+            continue
+        when = r.get("when")
+        if _mock_when_empty(when):
+            continue
+        try:
+            if _mock_when_match(when, body_bytes):
+                return r, "when"
+        except Exception as e:
+            print(f"[Mock] 入参条件判断出错，跳过该报文: {e}")
+    # 条件都不命中：只要这张映射里配了条件报文，就视为「按入参分流」，不接管（调用方回源真实请求）。
+    # 不拿「不填条件」的报文兑底 —— 否则配了条件和没配一样，不命中也会返回固定的 mock。
+    # 只有整张映射一条条件都没有（纯老配置）时，才仍按手动选中的报文返回。
+    has_cond = any(not _mock_when_empty(r.get("when")) for r in responses if isinstance(r, dict))
+    if not has_cond:
+        return _mock_active_response(mapping, responses), "active"
+    return None, "none"
+
+
+def _load_mock_proxy():
+    data = _settings.load("mock_proxy", {"mappings": []})
+    return data if isinstance(data, dict) else {"mappings": []}
 
 
 def _save_mock_proxy(data):
-    with _file_lock(MOCK_PROXY_FILE):
-        with open(MOCK_PROXY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    _settings.save("mock_proxy", data)
 
 
 @app.route("/api/mock-proxy", methods=["GET"])
 def api_get_mock_proxy():
     """获取代理 Mock 配置"""
     return jsonify(_load_mock_proxy())
+
+
+@app.route("/api/mock-proxy/endpoint")
+def api_mock_proxy_endpoint():
+    """代理 Mock 的客户端接入地址（小程序 IDE / 手机填入用）
+
+    客户端一般只能填一个代理，所以统一给 5051 这个单口：
+    普通 HTTP 请求字节转交 5050，HTTPS 走 CONNECT 隧道，用户不用分协议填两个端口。
+    """
+    return jsonify({
+        "local_ip": LOCAL_IP,
+        "proxy_port": _HTTPS_PROXY_PORT,
+        "web_port": PORT,
+    })
 
 
 @app.route("/api/mock-proxy", methods=["POST"])
@@ -5263,6 +5698,149 @@ def api_mock_proxy_delay():
         config["delay_ms"] = int(delay_ms)
         _save_mock_proxy(config)
         return jsonify({"ok": True, "delay_ms": config["delay_ms"]})
+
+
+# ── 真实响应确认：patch 报文勾了「命中时暂停」后，真实响应先挂起，等页面确认再回给客户端 ──
+# 与抓包侧的断点（_capture_bp_pending）是两套独立通道，这里只服务代理 Mock 的三条入口。
+_MOCK_CONFIRM_TIMEOUT = 60              # 秒：客户端最多等这么久，超时按已配字段自动放行
+_MOCK_CONFIRM_BODY_LIMIT = 2 * 1024 * 1024
+_mock_confirm_lock = threading.Lock()
+_mock_confirm_pending = {}              # id -> {"event": Event, "decision": dict|None, "info": dict}
+
+
+def _mock_confirm_on(active_obj, mapping_obj=None):
+    """该报文是否要求人工确认（报文级优先，其次映射级）"""
+    if isinstance(active_obj, dict) and active_obj.get("confirm"):
+        return True
+    return bool(mapping_obj and mapping_obj.get("confirm"))
+
+
+def _mock_confirm_wait(info, timeout=_MOCK_CONFIRM_TIMEOUT):
+    """挂起回包等前端确认；超时返回 timeout=True，由调用方按已配字段自动放行"""
+    cid = "mc_" + os.urandom(6).hex()
+    event = threading.Event()
+    item = {
+        "event": event, "decision": None,
+        "info": dict(info, id=cid, deadline=time.time() + timeout),
+    }
+    with _mock_confirm_lock:
+        _mock_confirm_pending[cid] = item
+    try:
+        event.wait(timeout=timeout)
+    finally:
+        with _mock_confirm_lock:
+            _mock_confirm_pending.pop(cid, None)
+    dec = item.get("decision")
+    if not isinstance(dec, dict):
+        return {"timeout": True}
+    return {"timeout": False, "body": dec.get("body"), "edited": bool(dec.get("edited")),
+            "action": dec.get("action") or "release"}
+
+
+@app.route("/api/mock-proxy/pending")
+def api_mock_proxy_pending():
+    """待确认的真实响应（前端轮询；含真实报文与套用字段后的预览）"""
+    now = time.time()
+    with _mock_confirm_lock:
+        items = []
+        for e in _mock_confirm_pending.values():
+            info = dict(e["info"])
+            info["remain"] = max(0, int(info["deadline"] - now))
+            info.pop("deadline", None)
+            items.append(info)
+    items.sort(key=lambda x: x.get("id") or "")
+    return jsonify({"pending": items, "timeout": _MOCK_CONFIRM_TIMEOUT})
+
+
+@app.route("/api/mock-proxy/pending/decide", methods=["POST"])
+def api_mock_proxy_pending_decide():
+    """前端确认：action=release（附 body 用改后的报文）/ auto（按字段表放行）"""
+    data = request.get_json(silent=True) or {}
+    cid = data.get("id")
+    action = str(data.get("action") or "release").strip().lower()
+    if action not in ("release", "auto"):
+        return jsonify({"ok": False, "error": "action 须为 release 或 auto"}), 400
+    body = data.get("body")
+    if body is not None and not isinstance(body, str):
+        return jsonify({"ok": False, "error": "body 须为字符串"}), 400
+    if isinstance(body, str) and len(body.encode("utf-8")) > _MOCK_CONFIRM_BODY_LIMIT:
+        return jsonify({"ok": False, "error": "报文超过 2MB，请改小后再放行"}), 400
+    with _mock_confirm_lock:
+        entry = _mock_confirm_pending.get(cid)
+    if not entry:
+        return jsonify({"ok": False, "error": "该请求已超时或已被处理"}), 410
+    patched = entry["info"].get("patched_text") or ""
+    use_body = body if (action == "release" and isinstance(body, str)) else None
+    entry["decision"] = {
+        "action": action,
+        "body": use_body,
+        "edited": bool(use_body is not None and use_body != patched),
+    }
+    entry["event"].set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mock-proxy/last-real")
+def api_mock_proxy_last_real():
+    """最近一次真实响应（从请求日志取，配置弹窗打开时预填「真实报文」用）"""
+    mapping_id = (request.args.get("mapping_id") or "").strip()
+    path = (request.args.get("path") or "").strip()
+    for entry in _load_proxy_logs():
+        if entry.get("mode") != "patch":
+            continue
+        if mapping_id and entry.get("mapping_id") != mapping_id:
+            continue
+        if not mapping_id and path and entry.get("mapping_path") != path:
+            continue
+        return jsonify({
+            "ok": True,
+            "time": entry.get("time"),
+            "method": entry.get("method"),
+            "path": entry.get("path"),
+            "status": entry.get("status"),
+            "headers": entry.get("response_headers") or {},
+            "body": entry.get("response_body"),
+            "mode": entry.get("mode"),
+            "patch_applied": entry.get("patch_applied"),
+            "patch_total": entry.get("patch_total"),
+        })
+    return jsonify({"ok": False, "error": "还没有真实响应记录：先用这条路径走一次代理 / 直连"})
+
+
+@app.route("/api/mock-proxy/fetch-real", methods=["POST"])
+def api_mock_proxy_fetch_real():
+    """主动取一次真实报文（按「远程映射」的 remote_host 反推；直连接入阶段用）"""
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "请先填请求路径"}), 400
+    if not path.startswith("/"):
+        path = "/" + path
+    method = str(data.get("method") or "GET").strip().upper()
+    target_url = _mock_real_target_url(path, str(data.get("query") or ""))
+    if not target_url:
+        return jsonify({
+            "ok": False,
+            "error": "取不到真实地址：「远程映射」里没有给 " + path + " 配 remote_host",
+        }), 502
+    headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+    headers = {str(k): str(v) for k, v in headers.items()
+               if str(k).lower() not in ("host", "proxy-connection", "content-length", "accept-encoding")}
+    body = data.get("body")
+    try:
+        real = _mock_forward_real(target_url, method, headers,
+                                  body.encode("utf-8") if isinstance(body, str) and body else None)
+    except Exception as e:
+        return jsonify({"ok": False, "error": "请求真实服务失败: " + str(e)}), 502
+    text = (real.content or b"").decode("utf-8", errors="ignore")
+    return jsonify({
+        "ok": True,
+        "target_url": target_url,
+        "status": real.status_code,
+        "headers": dict(real.headers),
+        "body": text[:200000],
+        "truncated": len(text) > 200000,
+    })
 
 
 @app.route("/proxy/", defaults={"subpath": ""}, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
@@ -5319,21 +5897,27 @@ def mock_proxy(subpath):
     resp_delay_ms = 0  # 响应级别的延时配置
     active = {}  # 当前激活的响应对象
     status_message = ""  # 自定义状态消息
-    resp_passthrough = False  # 仅延时：不返回 Mock，透传真实响应
+    resp_mode = "mock"        # mock / patch（patch = 真实报文：真实响应 + 命中暂停）
 
     if matched:
         responses = matched.get("responses")
-        active_idx = matched.get("active_response", 0)
         if responses and isinstance(responses, list) and len(responses) > 0:
-            idx = min(active_idx, len(responses) - 1)
-            active = responses[idx]
-            resp_name = active.get("name", "")
-            resp_status = active.get("status", 200)
-            resp_delay_ms = active.get("delay_ms", 0)  # 状态码后面的延时配置
-            resp_headers = active.get("headers") or {}
-            resp_body = active.get("body", "")
-            status_message = active.get("status_message", "")  # 自定义状态消息
-            resp_passthrough = _mock_passthrough(active, matched)
+            # 按报文自带的请求体条件挑（只对 POST 生效：同一路径不同入参返回不同报文）
+            active, _pick_src = _mock_pick_response(matched, method, request.get_data() or b"")
+            if not active:
+                # 报文条件一条都没命中：这条不接管，走下面的回源真实请求
+                matched = None
+                print(f"[Mock Proxy] 入参未命中 → 回源真实: {method} {path}")
+            else:
+                resp_name = active.get("name", "")
+                resp_status = active.get("status", 200)
+                resp_delay_ms = active.get("delay_ms", 0)  # 状态码后面的延时配置
+                resp_headers = active.get("headers") or {}
+                resp_body = active.get("body", "")
+                status_message = active.get("status_message", "")  # 自定义状态消息
+                resp_mode = _mock_resp_mode(active)
+                if _pick_src == "when":
+                    print(f"[Mock Proxy] 入参命中报文: {resp_name or '(未命名)'}")
         else:
             # 兼容旧格式：直接取顶层字段
             resp_status = matched.get("status", 200)
@@ -5341,9 +5925,38 @@ def mock_proxy(subpath):
             resp_headers = matched.get("headers") or {}
             resp_body = matched.get("body", "")
             status_message = matched.get("status_message", "")
-            resp_passthrough = bool(matched.get("passthrough"))
 
     if not matched:
+        # 没配映射 / 路径没配上 / 报文条件都没命中 → 都不接管，回源真实请求
+        target_url = _mock_real_target_url(path, request.query_string.decode("utf-8", "ignore"))
+        if target_url:
+            fwd_headers = {k: v for k, v in request.headers.items()
+                           if k.lower() not in ("host", "proxy-connection", "content-length", "accept-encoding")}
+            try:
+                real = _mock_forward_real(target_url, method, fwd_headers, request.get_data() or None)
+            except Exception as e:
+                return jsonify({"error": "回源真实服务失败: " + str(e)}), 502
+            body_text = (real.content or b"").decode("utf-8", errors="ignore")
+            _save_proxy_log({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "method": method,
+                "path": path,
+                "matched": False,
+                "mapping_path": None,
+                "mapping_id": None,
+                "response_name": "回源真实",
+                "status": real.status_code,
+                "status_message": "",
+                "response_headers": dict(real.headers),
+                "response_body": body_text[:20000],
+            })
+            print(f"[Mock Proxy] 未命中 mock → 回源真实服务: {target_url} -> {real.status_code}")
+            resp = make_response(real.content, real.status_code)
+            for k, v in real.headers.items():
+                if k.lower() not in ("transfer-encoding", "connection", "content-encoding"):
+                    resp.headers[k] = v
+            resp.headers["X-Mock-Source"] = "real-server"
+            return resp
         _save_proxy_log({
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "method": method,
@@ -5359,24 +5972,32 @@ def mock_proxy(subpath):
         })
         return jsonify({"error": "No mock mapping found for " + method + " " + path}), 404
 
-    # 仅延时模式：命中规则但不返回 Mock 数据——请求照常发给真实服务器，只把响应拖慢
-    if resp_passthrough:
+    # 真实报文：请求照常打到真实服务器，拿到真实响应后按 patches 覆盖字段（当前恒为空 = 原样透传），
+    # confirm 时先挂起等页面确认 / 改报文再放行
+    if resp_mode == "patch":
         delay_ms = resp_delay_ms if resp_delay_ms > 0 else config.get("delay_ms", 0)
         target_url = _mock_real_target_url(path, request.query_string.decode("utf-8", "ignore"))
         if not target_url:
             return jsonify({
-                "error": "仅延时模式需要「远程映射」为该路径指定真实目标（remote_host），当前路径: " + path
+                "error": "真实报文需要「远程映射」为该路径指定真实目标（remote_host），当前路径: " + path
             }), 502
-        try:
-            fwd_headers = {k: v for k, v in request.headers
-                           if k.lower() not in ("host", "proxy-connection", "content-length")}
-            real = _mock_forward_real(target_url, method, fwd_headers, request.get_data() or None)
-        except Exception as e:
-            return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
-        print(f"[Mock Proxy] 仅延时透传: {target_url} (+{delay_ms}ms)")
+        # 转发头去掉 Accept-Encoding：否则回包可能是 gzip/br，字段改不了
+        fwd_headers = _mock_patch_fwd_headers(request.headers)
+        res = _mock_patch_run(target_url, method, fwd_headers, request.get_data() or b"",
+                              active.get("patches") or matched.get("patches") or [],
+                              _mock_patch_ttl(active, matched),
+                              confirm=_mock_confirm_on(active, matched),
+                              meta={"mapping_id": matched_id, "mapping_path": matched.get("path"),
+                                    "request_path": path, "response_name": resp_name})
+        if res.get("error"):
+            return jsonify({"error": "真实报文转发真实服务器失败: " + res["error"]}), 502
+
+        print(f"[Mock Proxy] 真实报文: {target_url} 命中 {res['applied']}/{res['total']} 处"
+              + ("（缓存）" if res["cache_hit"] else "")
+              + ("（人工放行）" if res.get("confirm") == "manual" else "")
+              + ("（确认超时·自动放行）" if res.get("confirm") == "timeout" else ""))
         if delay_ms > 0:
             time.sleep(delay_ms / 1000.0)
-        real_text = real.content.decode("utf-8", errors="ignore")
         _save_proxy_log({
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "method": method,
@@ -5385,18 +6006,22 @@ def mock_proxy(subpath):
             "mapping_path": matched.get("path"),
             "mapping_id": matched_id,
             "response_name": resp_name,
-            "status": real.status_code,
+            "status": res["status"],
             "status_message": status_message,
-            "response_headers": dict(real.headers),
-            "response_body": real_text[:20000],
-            "passthrough": True,
+            "response_headers": _mock_patch_log_headers(res["headers"]),
+            "response_body": res["content"].decode("utf-8", errors="ignore")[:20000],
+            "mode": "patch",
+            "patch_applied": res["applied"],
+            "patch_total": res["total"],
+            "patch_error": res["err_detail"],
+            "cache_hit": res["cache_hit"],
+            "patch_confirm": res.get("confirm") or "",
+            "patch_edited": bool(res.get("edited")),
             "delay_ms": delay_ms,
         })
-        resp = make_response(real.content, real.status_code)
-        for k, v in real.headers.items():
-            if k.lower() not in ("transfer-encoding", "connection", "content-encoding"):
-                resp.headers[k] = v
-        resp.headers["X-Mock-Source"] = "real-server-delayed"
+        resp = make_response(res["content"], res["status"])
+        for k, v in _mock_patch_result_headers(res).items():
+            resp.headers[k] = v
         return resp
 
     # 记录日志（存完整响应体）
@@ -5440,15 +6065,335 @@ def mock_proxy(subpath):
     return resp
 
 
-def _mock_passthrough(active_obj, mapping_obj=None):
-    """响应报文是否开启「仅延时」：不返回 Mock 数据，真实请求照常发到服务器，只把响应拖慢"""
-    if isinstance(active_obj, dict) and active_obj.get("passthrough"):
-        return True
-    return bool(mapping_obj and mapping_obj.get("passthrough"))
+# 响应报文模式：mock=返回配置报文 / patch=真实报文（真实响应 + 命中暂停）
+_MOCK_RESP_MODES = ("mock", "patch")
+
+
+def _mock_resp_mode(active_obj):
+    """解析响应报文模式：只有 mock / patch 两种，缺省按 mock"""
+    mode = ""
+    if isinstance(active_obj, dict):
+        mode = str(active_obj.get("mode") or "").strip()
+    return mode if mode in _MOCK_RESP_MODES else "mock"
+
+
+def _mock_patch_tokens(path):
+    """JSONPath 拆 token：$.data.list[0].id → ['data', 'list', 0, 'id']（$ 与方括号可省）"""
+    s = str(path or "").strip()
+    if not s:
+        return []
+    s = re.sub(r"\[['\"]([^'\"]+)['\"]\]", r".\1", s)   # ['a'] → .a
+    s = s.replace("[", ".").replace("]", "")                # [0] → .0
+    s = s.lstrip("$").strip(".")
+    toks = []
+    for part in re.split(r"\.+", s):
+        if part == "":
+            continue
+        toks.append(int(part) if part.isdigit() else part)
+    return toks
+
+
+def _mock_patch_value(p):
+    """字段新值：json=True（默认）时按 JSON 解析数字/布尔/对象，否则一律当字符串"""
+    val = p.get("value", "")
+    if p.get("json", True) is False:
+        return "" if val is None else str(val)
+    if isinstance(val, (dict, list, int, float, bool)) or val is None:
+        return val
+    try:
+        return json.loads(str(val))
+    except Exception:
+        return str(val)
+
+
+def _mock_patch_apply(obj, patches):
+    """按 [{path,value,op,json}] 就地覆盖 JSON，返回 (命中条数, 错误列表)
+
+    对象缺的中间层自动建空对象；数组下标越界不静默造数据，记错误；
+    下标等于数组长度且非删除时当作追加。
+    """
+    applied = 0
+    errors = []
+    for i, p in enumerate(patches or []):
+        if not isinstance(p, dict) or p.get("enabled") is False:
+            continue
+        path = p.get("path") or ""
+        op = str(p.get("op") or "set").lower()
+        toks = _mock_patch_tokens(path)
+        if not toks:
+            errors.append("第%d条路径为空" % (i + 1))
+            continue
+        cur = obj
+        failed = False
+        for depth, tok in enumerate(toks[:-1]):
+            nxt = toks[depth + 1]
+            if isinstance(cur, dict):
+                if tok not in cur or cur[tok] is None:
+                    if isinstance(nxt, int):
+                        errors.append("%s 的父级不存在，不能凭空造数组" % path)
+                        failed = True
+                        break
+                    cur[tok] = {}
+                cur = cur[tok]
+            elif isinstance(cur, list):
+                if not isinstance(tok, int) or tok < 0 or tok >= len(cur):
+                    errors.append("%s 父级下标越界" % path)
+                    failed = True
+                    break
+                cur = cur[tok]
+            else:
+                errors.append("%s 的父级不是对象/数组" % path)
+                failed = True
+                break
+        if failed:
+            continue
+        last = toks[-1]
+        if isinstance(cur, dict):
+            if op == "delete":
+                cur.pop(last, None)
+            else:
+                cur[last] = _mock_patch_value(p)
+            applied += 1
+        elif isinstance(cur, list):
+            if isinstance(last, int) and last == len(cur) and op != "delete":
+                cur.append(_mock_patch_value(p))   # 末尾追加
+                applied += 1
+            elif not isinstance(last, int) or last < 0 or last >= len(cur):
+                errors.append("%s 下标越界" % path)
+            elif op == "delete":
+                cur.pop(last)
+                applied += 1
+            else:
+                cur[last] = _mock_patch_value(p)
+                applied += 1
+        else:
+            errors.append("%s 的父级不是对象/数组" % path)
+    return applied, errors
+
+
+def _mock_decode_content(real):
+    """取真实响应字节并按 Content-Encoding 解压；解不开返回 None（调用方原样返回）"""
+    raw = real.content
+    enc = (real.headers.get("Content-Encoding") or "").lower().strip()
+    if not enc or enc == "identity":
+        return raw
+    try:
+        if "gzip" in enc:
+            import gzip
+            return gzip.decompress(raw)
+        if "deflate" in enc:
+            import zlib
+            try:
+                return zlib.decompress(raw)
+            except zlib.error:
+                return zlib.decompress(raw, -zlib.MAX_WBITS)
+        if "br" in enc:
+            try:
+                import brotli
+                return brotli.decompress(raw)
+            except Exception:
+                try:
+                    import brotlicffi as brotli
+                    return brotli.decompress(raw)
+                except Exception:
+                    return None
+    except Exception:
+        return None
+    return None
+
+
+# 真实报文的真实响应缓存：避免客户端重试 / 连续请求把写接口重复执行
+_MOCK_PATCH_CACHE = {}          # key -> {ts, status, headers, content}
+_MOCK_PATCH_CACHE_LOCK = threading.Lock()
+_MOCK_PATCH_CACHE_MAX = 200
+
+
+def _mock_patch_cache_get(key, ttl):
+    if ttl <= 0:
+        return None
+    now = time.time()
+    with _MOCK_PATCH_CACHE_LOCK:
+        hit = _MOCK_PATCH_CACHE.get(key)
+        if hit and (now - hit["ts"]) <= ttl:
+            return hit
+        if hit:
+            _MOCK_PATCH_CACHE.pop(key, None)
+    return None
+
+
+def _mock_patch_cache_put(key, status, headers, content):
+    with _MOCK_PATCH_CACHE_LOCK:
+        if len(_MOCK_PATCH_CACHE) >= _MOCK_PATCH_CACHE_MAX:
+            now = time.time()
+            for k in [k for k, v in _MOCK_PATCH_CACHE.items() if now - v["ts"] > 300]:
+                _MOCK_PATCH_CACHE.pop(k, None)
+            if len(_MOCK_PATCH_CACHE) >= _MOCK_PATCH_CACHE_MAX:
+                _MOCK_PATCH_CACHE.clear()
+        _MOCK_PATCH_CACHE[key] = {
+            "ts": time.time(), "status": status,
+            "headers": dict(headers or {}), "content": content,
+        }
+
+
+def _mock_patch_fwd_headers(src):
+    """转发到真实服务的请求头：去掉 host/代理头/长度，并去掉 Accept-Encoding
+
+    去掉 Accept-Encoding 是必须的：否则真实服务可能回 gzip/br，压缩报文改不了字段。
+    src 两种形态都要收：Flask 请求头（werkzeug Headers，逐项是 key/value 二元组）
+    与 MITM/正向代理里自己拼的普通 dict（逐项是 key）。按 dict 迭代会把 key 当二元组解包，
+    直接 ValueError: too many values to unpack。
+    """
+    items = src.items() if isinstance(src, dict) else src
+    return {k: v for k, v in items
+            if k.lower() not in ("host", "proxy-connection", "content-length", "accept-encoding")}
+
+
+def _mock_patch_run(target_url, method, fwd_headers, body, patches, ttl, confirm=False, meta=None):
+    """真实响应 + 只改指定字段（/proxy 路由、HTTP 代理、HTTPS MITM 三处入口共用）
+
+    返回 dict：
+      error        转发真实服务失败的错误信息（其余字段无意义）
+      undecodable  True = 响应压缩格式解不开，content 为原始字节，调用方原样返回
+      status / headers / content   真实状态码、响应头、改后的响应体（确认模式下为人工改后的内容）
+      applied / total              命中条数 / 规则总数
+      err / err_detail             回包头用的英文错误码（HTTP 头只容 latin-1）/ 日志用的中文说明
+      cache_hit                    本次是否复用缓存
+      real_text                    真实报文原文（未套用字段表，供「真实报文」展示 / 人工编辑对照）
+      confirm                      ""=未开确认 / manual=人工放行 / timeout=超时按字段自动放行
+      edited                       人工确认时是否真的改过报文
+
+    confirm=True 时：真实响应拿到后不立即回包，而是挂起等页面确认（最长 _MOCK_CONFIRM_TIMEOUT 秒），
+    超时则用「已套用字段表」的内容放行，客户端不会一直挂着。
+    """
+    import hashlib
+    req_body = body or b""
+    ckey = "%s|%s|%s" % (method, target_url, hashlib.md5(req_body).hexdigest())
+    cached = _mock_patch_cache_get(ckey, ttl)
+    if cached:
+        status = cached["status"]
+        headers = dict(cached["headers"])
+        raw = cached["content"]
+        cache_hit = True
+    else:
+        try:
+            real = _mock_forward_real(target_url, method, fwd_headers, req_body or None)
+        except Exception as e:
+            return {"error": str(e)}
+        status = real.status_code
+        headers = dict(real.headers)
+        cache_hit = False
+        raw = _mock_decode_content(real)
+        if raw is None:   # 压缩解不开：宁可原样返回，也不让链路断
+            return {"undecodable": True, "status": status, "headers": headers,
+                    "content": real.content, "applied": 0, "total": len(patches or []),
+                    "err": "undecodable", "err_detail": "响应无法解压，已原样返回", "cache_hit": False}
+        if ttl > 0:
+            _mock_patch_cache_put(ckey, status, headers, raw)
+    text = raw.decode("utf-8", errors="ignore")
+    out_text = text
+    applied = 0
+    err = ""
+    err_detail = ""
+    try:
+        obj = json.loads(text)
+    except Exception:
+        err, err_detail = "not-json", "真实响应不是 JSON，已原样返回"
+    else:
+        # 没有要改的字段（「真实报文」条目 / 只靠人工确认）：真实报文一个字节都不动
+        if patches:
+            applied, errs = _mock_patch_apply(obj, patches)
+            try:
+                out_text = json.dumps(obj, ensure_ascii=False)
+            except Exception as e:
+                out_text = text
+                err, err_detail = "patch-failed", "回写 JSON 失败: %s" % e
+            if errs:
+                err, err_detail = "patch-failed", "；".join(errs)[:300]
+    out = {"status": status, "headers": headers, "content": out_text.encode("utf-8"),
+           "applied": applied, "total": len(patches or []),
+           "err": err, "err_detail": err_detail, "cache_hit": cache_hit,
+           "real_text": text, "confirm": "", "edited": False}
+    if confirm:
+        # 真实响应已经到手：先挂起，页面能看到真实报文并可改，确认（或超时）后再回给客户端
+        dec = _mock_confirm_wait({
+            "method": method,
+            "target_url": target_url,
+            "status": status,
+            "headers": _mock_patch_log_headers(headers),
+            "real_text": text,
+            "patched_text": out_text,
+            "applied": applied,
+            "total": len(patches or []),
+            "error": err_detail,
+            "cache_hit": cache_hit,
+            "mapping_path": (meta or {}).get("mapping_path") or "",
+            "mapping_id": (meta or {}).get("mapping_id") or "",
+            "request_path": (meta or {}).get("request_path") or "",
+            "response_name": (meta or {}).get("response_name") or "",
+        })
+        if dec.get("timeout"):
+            out["confirm"] = "timeout"
+        else:
+            body_text = dec.get("body")
+            if isinstance(body_text, str):
+                out["content"] = body_text.encode("utf-8")
+                out["edited"] = bool(dec.get("edited"))
+            out["confirm"] = "manual"
+    return out
+
+
+def _mock_patch_result_headers(res):
+    """改字段后的回包头：真实头去掉分帧/压缩字段，再补 Mock 溯源头部
+
+    X-Mock-Patch-Error 只放英文错误码：HTTP 头按 latin-1 编码，中文会让回包直接 500，
+    具体原因写在代理日志的 patch_error 字段里。
+    """
+    drop = ["transfer-encoding", "connection", "content-length"]
+    if not res.get("undecodable"):
+        drop.append("content-encoding")   # 内容已解压并重新编码
+    hdrs = {k: v for k, v in (res.get("headers") or {}).items() if k.lower() not in drop}
+    if not any(str(k).lower() == "content-type" for k in hdrs):
+        hdrs["Content-Type"] = "application/json; charset=utf-8"
+    if res.get("undecodable"):
+        hdrs["X-Mock-Source"] = "real-server"
+    else:
+        hdrs["X-Mock-Source"] = "real-patched"
+        hdrs["X-Mock-Patch"] = "%d/%d" % (res.get("applied", 0), res.get("total", 0))
+    if res.get("cache_hit"):
+        hdrs["X-Mock-Patch-Cache"] = "hit"
+    if res.get("err"):
+        hdrs["X-Mock-Patch-Error"] = res["err"]
+    if res.get("confirm"):
+        hdrs["X-Mock-Confirm"] = res["confirm"]
+    return hdrs
+
+
+def _mock_patch_log_headers(headers):
+    """日志里的响应头：去掉长度/压缩/分帧字段（记的 body 是解压改后的内容）"""
+    return {k: v for k, v in (headers or {}).items()
+            if k.lower() not in ("transfer-encoding", "connection", "content-encoding", "content-length")}
+
+
+def _mock_patch_ttl(active_obj, mapping_obj=None):
+    """真实响应缓存秒数：0 = 每次都打真实服务（弹窗里已没有 TTL 入口，缺省就走 0）
+
+    只有历史配置里显式写了 cache_ttl 才启用缓存，口径与「真实报文 = 原样透传」一致。
+    """
+    raw = None
+    if isinstance(active_obj, dict):
+        raw = active_obj.get("cache_ttl")
+    if raw is None and isinstance(mapping_obj, dict):
+        raw = mapping_obj.get("cache_ttl")
+    if raw is None:
+        return 0
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _mock_forward_real(url, method, headers, data, timeout=10):
-    """转发到真实服务器（仅延时模式用），返回 requests 响应对象"""
+    """转发到真实服务器（真实报文用），返回 requests 响应对象"""
     return req_lib.request(
         method=method,
         url=url,
@@ -5461,7 +6406,7 @@ def _mock_forward_real(url, method, headers, data, timeout=10):
 
 
 def _mock_real_target_url(local_path, query=""):
-    """按「远程映射」反推 /proxy/ 本地路径对应的真实地址（仅延时模式用）
+    """按「远程映射」反推 /proxy/ 本地路径对应的真实地址（真实报文用）
 
     远程映射把 remote_host(+remote_path) 映射到 local_path，反推时优先用 remote_path，
     其次用 remote_host 里自带的路径（如 https://host/api/sso/login），否则沿用本地路径。
@@ -5541,24 +6486,14 @@ def api_clear_proxy_logs():
 #  远程映射：类似 Charles 远程映射，反向代理 + mock
 # ═══════════════════════════════════════════════════
 
-REMOTE_PROXY_FILE = os.path.join(DATA_DIR, "_remote_proxy.json")
-
-
+# 远程代理映射：存于 data/settings.json 的 remote_proxy 段落（原 data/_remote_proxy.json）
 def _load_remote_proxy():
-    if os.path.exists(REMOTE_PROXY_FILE):
-        with _file_lock(REMOTE_PROXY_FILE):
-            try:
-                with open(REMOTE_PROXY_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return {"mappings": []}
-    return {"mappings": []}
+    data = _settings.load("remote_proxy", {"mappings": []})
+    return data if isinstance(data, dict) else {"mappings": []}
 
 
 def _save_remote_proxy(data):
-    with _file_lock(REMOTE_PROXY_FILE):
-        with open(REMOTE_PROXY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    _settings.save("remote_proxy", data)
 
 
 @app.route("/api/remote-proxy", methods=["GET"])
@@ -5886,7 +6821,7 @@ def remote_proxy(subpath):
         return jsonify({"error": "协议必须是 http 或 https"}), 400
 
     print(f"[Remote Proxy] 收到请求: protocol={protocol}, host={host}, path={original_path}, method={request.method}")
-    print(f"[Remote Proxy] 远程映射配置: {config.get('mappings', [])}")
+    print(f"[Remote Proxy] 远程映射数: {len(config.get('mappings', []))}")
 
     # 查找远程映射配置
     matched_remote = None
@@ -5925,7 +6860,7 @@ def remote_proxy(subpath):
         if protocol_match and host_match:
             if not actual_path or original_path.rstrip('/') == actual_path.rstrip('/'):
                 matched_remote = m
-                print(f"[Remote Proxy] 匹配成功: {m}")
+                print(f"[Remote Proxy] 匹配成功: {actual_host}{actual_path or ''} -> {m.get('local_path', '/')}")
                 break
 
     if matched_remote:
@@ -5933,61 +6868,75 @@ def remote_proxy(subpath):
         local_path = matched_remote.get("local_path", "/")
         method = request.method.upper()
         print(f"[Remote Proxy] 查找本地 mock: local_path={local_path}, method={method}")
-        print(f"[Remote Proxy] Mock 配置: {mock_config.get('mappings', [])}")
+        print(f"[Remote Proxy] Mock 映射数: {len(mock_config.get('mappings', []))}")
 
         # 在 mock 配置中查找（先精确匹配，再前缀匹配）
         matched_mock = None
         for m in mock_config.get("mappings", []):
             if m.get("path", "") == local_path:
                 matched_mock = m
-                print(f"[Remote Proxy] 精确匹配成功: {m}")
+                print(f"[Remote Proxy] 精确匹配成功: {local_path}")
                 break
         if not matched_mock:
             for m in mock_config.get("mappings", []):
                 mock_path = m.get("path", "")
                 if mock_path and local_path.startswith(mock_path):
                     matched_mock = m
-                    print(f"[Remote Proxy] 前缀匹配成功: {m}")
+                    print(f"[Remote Proxy] 前缀匹配成功: {mock_path} -> {local_path}")
                     break
         
         print(f"[Remote Proxy] 最终 matched_mock: {matched_mock is not None}")
 
+        # 报文级入参条件（只对 POST 生效）：命中就返回；一条都没命中就不接管，落到下面转发真实服务器
+        active = None
+        when_miss = False
+        if matched_mock:
+            _resps = matched_mock.get("responses")
+            if isinstance(_resps, list) and _resps:
+                active, _pick_src = _mock_pick_response(matched_mock, method, request.get_data() or b"")
+                if not active:
+                    print(f"[Remote Proxy] 入参未命中 → 转发真实服务器: {method} {local_path}")
+                    when_miss = True
+                    matched_mock = None
+
         if matched_mock:
             responses = matched_mock.get("responses")
-            active_idx = matched_mock.get("active_response", 0)
             resp_delay_ms = 0
             status_message = ""
             resp_name = ""
-            resp_passthrough = False
+            resp_mode = "mock"     # mock / patch（patch = 真实报文：真实响应 + 命中暂停）
             if responses and isinstance(responses, list) and len(responses) > 0:
-                idx = min(active_idx, len(responses) - 1)
-                active = responses[idx]
                 resp_name = active.get("name", "")
                 resp_status = active.get("status", 200)
                 resp_delay_ms = active.get("delay_ms", 0)
                 resp_headers = active.get("headers") or {}
                 resp_body = active.get("body", "")
                 status_message = active.get("status_message", "")
-                resp_passthrough = _mock_passthrough(active, matched_mock)
+                resp_mode = _mock_resp_mode(active)
             else:
                 resp_status = matched_mock.get("status", 200)
                 resp_delay_ms = matched_mock.get("delay_ms", 0)
                 resp_headers = matched_mock.get("headers") or {}
                 resp_body = matched_mock.get("body", "")
                 status_message = matched_mock.get("status_message", "")
-                resp_passthrough = bool(matched_mock.get("passthrough"))
 
-            # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器，只把响应拖慢
-            if resp_passthrough:
-                delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
+            # 真实报文：请求照常打到真实服务，拿到真实响应后原样透传（confirm 时先挂起等确认）
+            if resp_mode == "patch":
                 real_url = f"{protocol}://{host}{original_path}" + (("?" + qs) if qs else "")
-                try:
-                    fwd_headers = {k: v for k, v in request.headers
-                                   if k.lower() not in ('host', 'proxy-connection', 'content-length')}
-                    real = _mock_forward_real(real_url, method, fwd_headers, request.get_data() or None)
-                except Exception as e:
-                    return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
-                print(f"[Remote Proxy] 仅延时透传: {real_url} (+{delay_ms}ms)")
+                delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
+                res = _mock_patch_run(
+                    real_url, method, _mock_patch_fwd_headers(request.headers),
+                    request.get_data() or b"",
+                    active.get("patches") or matched_mock.get("patches") or [],
+                    _mock_patch_ttl(active, matched_mock),
+                    confirm=_mock_confirm_on(active, matched_mock),
+                    meta={"mapping_id": matched_mock.get("id"),
+                          "mapping_path": matched_mock.get("path"),
+                          "request_path": real_url, "response_name": resp_name})
+                if res.get("error"):
+                    return jsonify({"error": "真实报文转发真实服务器失败: " + res["error"]}), 502
+                print(f"[Remote Proxy] 真实报文: {real_url} 命中 {res['applied']}/{res['total']} 处"
+                      + ("（缓存）" if res["cache_hit"] else ""))
                 if delay_ms > 0:
                     time.sleep(delay_ms / 1000.0)
                 _save_proxy_log({
@@ -5998,19 +6947,23 @@ def remote_proxy(subpath):
                     "mapping_path": matched_mock.get("path"),
                     "mapping_id": matched_mock.get("id"),
                     "response_name": resp_name,
-                    "status": real.status_code,
+                    "status": res["status"],
                     "status_message": status_message,
-                    "response_headers": dict(real.headers),
-                    "response_body": real.content.decode("utf-8", errors="ignore")[:20000],
-                    "passthrough": True,
+                    "response_headers": _mock_patch_log_headers(res["headers"]),
+                    "response_body": res["content"].decode("utf-8", errors="ignore")[:20000],
+                    "mode": "patch",
+                    "patch_applied": res["applied"],
+                    "patch_total": res["total"],
+                    "patch_error": res["err_detail"],
+                    "cache_hit": res["cache_hit"],
+                    "patch_confirm": res.get("confirm") or "",
+                    "patch_edited": bool(res.get("edited")),
                     "delay_ms": delay_ms,
                 })
-                resp = make_response(real.content, real.status_code)
-                for k, v in real.headers.items():
-                    if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
-                        resp.headers[k] = v
-                resp.headers["X-Mock-Source"] = "real-server-delayed"
-                return resp
+                patched = make_response(res["content"], res["status"])
+                for k, v in _mock_patch_result_headers(res).items():
+                    patched.headers[k] = v
+                return patched
 
             if isinstance(resp_body, (dict, list)):
                 resp_body = json.dumps(resp_body, ensure_ascii=False)
@@ -6050,19 +7003,21 @@ def remote_proxy(subpath):
             return resp
 
         # 映射命中但本地未配置对应 mock：记录未命中日志，便于排查"为什么没 mock"
-        _save_proxy_log({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "method": method,
-            "path": host + original_path + (("?" + qs) if qs else ""),
-            "matched": False,
-            "mapping_path": matched_remote.get("remote_path"),
-            "mapping_id": matched_remote.get("id"),
-            "response_name": None,
-            "status": 404,
-            "status_message": "",
-            "response_headers": {},
-            "response_body": None,
-        })
+        # （入参条件都没命中时不算未命中，直接回源，不记这条 404 日志）
+        if not when_miss:
+            _save_proxy_log({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "method": method,
+                "path": host + original_path + (("?" + qs) if qs else ""),
+                "matched": False,
+                "mapping_path": matched_remote.get("remote_path"),
+                "mapping_id": matched_remote.get("id"),
+                "response_name": None,
+                "status": 404,
+                "status_message": "",
+                "response_headers": {},
+                "response_body": None,
+            })
 
     # 没有映射配置或 mock 未匹配，转发到真实服务器（保留原始 query 参数）
     target_url = f"{protocol}://{host}{original_path}" + (("?" + qs) if qs else "")
@@ -6144,6 +7099,9 @@ def handle_proxy_request():
         target_path = parsed.path or "/"
         target_protocol = parsed.scheme or "http"
         req_uri = target_path + (("?" + parsed.query) if parsed.query else "")
+
+        # 诊断留痕：证明该请求确实到了代理（未配远程映射时不会写请求日志）
+        _save_proxy_debug("HTTP", request.remote_addr, f"{request.method} {full_url}")
         
         # 查找远程映射配置
         config = _load_remote_proxy()
@@ -6183,12 +7141,13 @@ def handle_proxy_request():
                 # 匹配主机和路径（精确匹配，避免同一域名下多个接口被意外 mock）
                 if not actual_path or target_path.rstrip('/') == actual_path.rstrip('/'):
                     matched_remote = m
-                    print(f"[HTTP Proxy] 匹配成功: {m}")
+                    print(f"[HTTP Proxy] 匹配成功: {actual_host}{actual_path or ''} -> {m.get('local_path', '/')}")
                     break
                 if host_matched_remote is None:
                     host_matched_remote = m
         
         matched_mock = None
+        when_miss = False  # 入参条件一条都没命中（回源真实，不算「未配 mock」）
         if matched_remote:
             # 返回本地 Mock
             local_path = matched_remote.get("local_path", "/")
@@ -6207,40 +7166,54 @@ def handle_proxy_request():
                         break
             
             if matched_mock:
+                # 报文级入参条件（只对 POST 生效）：命中就返回；都没命中就不接管，落到下面转发真实服务器
+                _resps = matched_mock.get("responses")
+                active = None
+                if isinstance(_resps, list) and _resps:
+                    active, _pick_src = _mock_pick_response(matched_mock, method, request.get_data() or b"")
+                    if not active:
+                        print(f"[HTTP Proxy] 入参未命中 → 转发真实服务器: {method} {target_path}")
+                        when_miss = True
+                        matched_mock = None
+
+            if matched_mock:
                 responses = matched_mock.get("responses")
-                active_idx = matched_mock.get("active_response", 0)
                 resp_delay_ms = 0
                 status_message = ""
                 resp_name = ""
-                resp_passthrough = False
+                resp_mode = "mock"
+                active = {} if active is None else active
                 if responses and isinstance(responses, list) and len(responses) > 0:
-                    idx = min(active_idx, len(responses) - 1)
-                    active = responses[idx]
                     resp_name = active.get("name", "")
                     resp_status = active.get("status", 200)
                     resp_delay_ms = active.get("delay_ms", 0)
                     resp_headers = active.get("headers") or {}
                     resp_body = active.get("body", "")
                     status_message = active.get("status_message", "")
-                    resp_passthrough = _mock_passthrough(active, matched_mock)
+                    resp_mode = _mock_resp_mode(active)
                 else:
                     resp_status = matched_mock.get("status", 200)
                     resp_delay_ms = matched_mock.get("delay_ms", 0)
                     resp_headers = matched_mock.get("headers") or {}
                     resp_body = matched_mock.get("body", "")
                     status_message = matched_mock.get("status_message", "")
-                    resp_passthrough = bool(matched_mock.get("passthrough"))
 
-                # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器（full_url 即真实地址），只把响应拖慢
-                if resp_passthrough:
+                # 真实报文：full_url 就是真实接口，取回真实响应后原样透传（confirm 时先挂起）
+                if resp_mode == "patch":
                     delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
-                    try:
-                        headers = {k: v for k, v in request.headers
-                                   if k.lower() not in ('host', 'proxy-connection', 'content-length')}
-                        real = _mock_forward_real(full_url, request.method, headers, request.get_data() or None)
-                    except Exception as e:
-                        return jsonify({"error": "仅延时模式转发真实服务器失败: " + str(e)}), 502
-                    print(f"[HTTP Proxy] 仅延时透传: {full_url} (+{delay_ms}ms)")
+                    res = _mock_patch_run(
+                        full_url, request.method, _mock_patch_fwd_headers(request.headers),
+                        request.get_data() or b"",
+                        active.get("patches") or matched_mock.get("patches") or [],
+                        _mock_patch_ttl(active, matched_mock),
+                        confirm=_mock_confirm_on(active, matched_mock),
+                        meta={"mapping_id": matched_mock.get("id"),
+                              "mapping_path": matched_mock.get("path"),
+                              "request_path": target_host + req_uri, "response_name": resp_name})
+                    if res.get("error"):
+                        return jsonify({"error": "真实报文转发真实服务器失败: " + res["error"]}), 502
+                    print(f"[HTTP Proxy] 真实报文: {full_url} 命中 {res['applied']}/{res['total']} 处"
+                          + ("（缓存）" if res["cache_hit"] else ""))
                     if delay_ms > 0:
                         time.sleep(delay_ms / 1000.0)
                     _save_proxy_log({
@@ -6251,19 +7224,23 @@ def handle_proxy_request():
                         "mapping_path": matched_mock.get("path"),
                         "mapping_id": matched_mock.get("id"),
                         "response_name": resp_name,
-                        "status": real.status_code,
+                        "status": res["status"],
                         "status_message": status_message,
-                        "response_headers": dict(real.headers),
-                        "response_body": real.content.decode("utf-8", errors="ignore")[:20000],
-                        "passthrough": True,
+                        "response_headers": _mock_patch_log_headers(res["headers"]),
+                        "response_body": res["content"].decode("utf-8", errors="ignore")[:20000],
+                        "mode": "patch",
+                        "patch_applied": res["applied"],
+                        "patch_total": res["total"],
+                        "patch_error": res["err_detail"],
+                        "cache_hit": res["cache_hit"],
+                        "patch_confirm": res.get("confirm") or "",
+                        "patch_edited": bool(res.get("edited")),
                         "delay_ms": delay_ms,
                     })
-                    resp = make_response(real.content, real.status_code)
-                    for k, v in real.headers.items():
-                        if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
-                            resp.headers[k] = v
-                    resp.headers["X-Mock-Source"] = "real-server-delayed"
-                    return resp
+                    patched = make_response(res["content"], res["status"])
+                    for k, v in _mock_patch_result_headers(res).items():
+                        patched.headers[k] = v
+                    return patched
 
                 if isinstance(resp_body, (dict, list)):
                     resp_body = json.dumps(resp_body, ensure_ascii=False)
@@ -6304,7 +7281,7 @@ def handle_proxy_request():
         
         # 未命中（域名未中/路径不符/未配对应本地 mock）：记录日志便于排查"为什么没 mock"
         miss_remote = matched_remote or host_matched_remote
-        if not matched_mock and miss_remote:
+        if not matched_mock and miss_remote and not when_miss:
             _save_proxy_log({
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "method": request.method.upper(),
@@ -6348,6 +7325,58 @@ def handle_proxy_request():
 #  HTTPS CONNECT 隧道处理
 # ═══════════════════════════════════════════════════
 
+def _relay_http_proxy_to_web(client_socket, first_data):
+    """单口代理：5051 收到非 CONNECT 的普通/绝对 URI 请求时转交 5050
+
+    5050 上的 handle_proxy_request 已具备完整的映射匹配与转发能力，
+    这里只做字节级中继（绝对 URI 原样转过去），避免两套实现行为漂移。
+    小程序开发者工具/手机只能填一个代理端口，靠这里同时兼顾 HTTP 与 HTTPS。
+    """
+    try:
+        upstream = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+        upstream.settimeout(None)  # 连接后取消超时：中继要保持 keep-alive 连接不被 10s 空闲切断
+    except Exception as e:
+        print(f"[Proxy 5051] 转交 5050 失败: {e}")
+        try:
+            client_socket.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        except Exception:
+            pass
+        try:
+            client_socket.close()
+        except Exception:
+            pass
+        return
+    try:
+        if first_data:
+            upstream.sendall(first_data)
+    except Exception:
+        pass
+
+    def _pipe(src, dst):
+        try:
+            while True:
+                chunk = src.recv(65536)
+                if not chunk:
+                    break
+                dst.sendall(chunk)
+        except Exception:
+            pass
+        finally:
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except Exception:
+                pass
+
+    # 双向中继：客户端→5050 放子线程，5050→客户端在当前线程；任一方向结束即关闭两端
+    threading.Thread(target=_pipe, args=(client_socket, upstream), daemon=True).start()
+    _pipe(upstream, client_socket)
+    for s in (upstream, client_socket):
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=None):
     """处理 HTTPS CONNECT 隧道：匹配域名后 MITM 拦截，按路径决定是否返回 mock"""
     client_info = f"{client_addr[0]}:{client_addr[1]}" if client_addr else "unknown"
@@ -6389,6 +7418,8 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
 
     # 2. 域名没匹配 → 纯隧道转发
     if not matched_remote:
+        _save_proxy_debug("TUNNEL", client_addr[0] if client_addr else "",
+                          "%s:%s 未命中远程映射" % (target_host, target_port))
         try:
             target_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             target_socket.settimeout(10)
@@ -6419,6 +7450,8 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
         return
 
     # 3. 域名匹配了 → MITM 拦截，查看路径
+    _save_proxy_debug("MITM", client_addr[0] if client_addr else "",
+                      "%s:%s -> %s" % (target_host, target_port, matched_actual_path or "/"))
     try:
         # 生成域名证书（内存缓存）
         cert_pem, key_pem = generate_domain_cert(target_host)
@@ -6505,12 +7538,33 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
                         matched_mock = m
                         break
 
+        # 6. 诊断：没命中 mock 时把「实际路径 / 期望路径」写进诊断日志，避免只留一句「拦不住」
+        if not matched_mock:
+            _save_proxy_debug("MISS", client_addr[0] if client_addr else "",
+                              "req=%s expect=%s path_match=%s local=%s" % (
+                                  request_path_only, matched_actual_path or "/", path_match,
+                                  matched_remote.get("local_path", "/")))
+
+        # 6b. 报文级入参条件（只对 POST 生效；隧道里 body 已收齐）：命中就返回；
+        #     一条都没命中就不接管，落到下面的「转发到真实服务器」
+        active = None
+        when_miss = False
+        if matched_mock:
+            _resps = matched_mock.get("responses")
+            if isinstance(_resps, list) and _resps:
+                active, _pick_src = _mock_pick_response(matched_mock, method, request_body or b"")
+                if not active:
+                    print(f"[CONNECT] 入参未命中 → 转发真实服务器: {method} {request_path_only}")
+                    when_miss = True
+                    matched_mock = None
+
         # 记录日志（仅匹配时）
         if matched_mock:
             log_entry = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "method": method,
                 "path": target_host + request_path,
+                "client_ip": client_addr[0] if client_addr else "",
                 "matched": True,
                 "mapping_path": matched_actual_path,
                 "mapping_id": matched_remote.get("id"),
@@ -6522,74 +7576,83 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
             }
 
             responses = matched_mock.get("responses")
-            active_idx = matched_mock.get("active_response", 0)
             resp_delay_ms = 0
             resp_status = 200
             resp_headers = {}
             resp_body = ""
             status_message = ""
-            resp_passthrough = False
+            resp_mode = "mock"
             if responses and isinstance(responses, list) and len(responses) > 0:
-                idx = min(active_idx, len(responses) - 1)
-                active = responses[idx]
+                active = {} if active is None else active
                 resp_status = active.get("status", 200)
                 resp_delay_ms = active.get("delay_ms", 0)
                 resp_headers = active.get("headers") or {}
                 resp_body = active.get("body", "")
                 status_message = active.get("status_message", "")
-                resp_passthrough = _mock_passthrough(active, matched_mock)
+                resp_mode = _mock_resp_mode(active)
             else:
                 resp_status = matched_mock.get("status", 200)
                 resp_delay_ms = matched_mock.get("delay_ms", 0)
                 resp_headers = matched_mock.get("headers") or {}
                 resp_body = matched_mock.get("body", "")
                 status_message = matched_mock.get("status_message", "")
-                resp_passthrough = bool(matched_mock.get("passthrough"))
 
-            # 仅延时模式：不返回 Mock 数据，请求照常发给真实服务器，只把响应拖慢
-            if resp_passthrough:
+            # 真实报文：请求照常打到真实服务器，回包前原样透传（confirm 时先挂起）
+            if resp_mode == "patch":
                 delay_ms = resp_delay_ms if resp_delay_ms > 0 else mock_config.get("delay_ms", 0)
-                try:
-                    fwd_headers = {}
-                    for line in headers_raw.split('\r\n')[1:]:
-                        if ':' in line:
-                            k, v = line.split(':', 1)
-                            k, v = k.strip(), v.strip()
-                            if k.lower() not in ('host', 'proxy-connection', 'content-length'):
-                                fwd_headers[k] = v
-                    real = _mock_forward_real(
-                        "https://%s%s" % (
-                            target_host if target_port in (443, None) else "%s:%s" % (target_host, target_port),
-                            request_path,
-                        ),
-                        method, fwd_headers, request_body or None
-                    )
-                    if delay_ms > 0:
-                        time.sleep(delay_ms / 1000.0)
-                except Exception as fwd_err:
-                    err_body = f"仅延时模式转发真实服务器失败: {fwd_err}"
+                fwd_headers = {}
+                for line in headers_raw.split('\r\n')[1:]:
+                    if ':' in line:
+                        k, v = line.split(':', 1)
+                        k, v = k.strip(), v.strip()
+                        if k.lower() not in ('host', 'proxy-connection', 'content-length'):
+                            fwd_headers[k] = v
+                fwd_headers = _mock_patch_fwd_headers(fwd_headers)   # 再去掉 Accept-Encoding
+                real_url = "https://%s%s" % (
+                    target_host if target_port in (443, None) else "%s:%s" % (target_host, target_port),
+                    request_path,
+                )
+                res = _mock_patch_run(
+                    real_url, method, fwd_headers, request_body or b"",
+                    active.get("patches") or matched_mock.get("patches") or [],
+                    _mock_patch_ttl(active, matched_mock),
+                    confirm=_mock_confirm_on(active, matched_mock),
+                    meta={"mapping_id": matched_mock.get("id"),
+                          "mapping_path": matched_mock.get("path"),
+                          "request_path": real_url, "response_name": log_entry.get("response_name") or ""})
+                if res.get("error"):
+                    err_body = ("真实报文转发真实服务器失败: " + res["error"]).encode('utf-8')
                     ssl_client.send(
-                        f"HTTP/1.1 502 Bad Gateway\r\nContent-Length: {len(err_body.encode('utf-8'))}"
-                        f"\r\nConnection: close\r\n\r\n{err_body}".encode('utf-8')
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(err_body)
+                        + err_body
                     )
                     try:
                         ssl_client.close()
                     except Exception:
                         pass
                     return
-                print(f"[CONNECT] 仅延时透传: https://{target_host}{request_path} (+{delay_ms}ms)")
-                real_head = f"HTTP/1.1 {real.status_code} OK\r\n"
-                real_head += "X-Mock-Source: real-server-delayed\r\n"
-                for k, v in real.headers.items():
-                    if k.lower() not in ('transfer-encoding', 'connection', 'content-encoding'):
-                        real_head += f"{k}: {v}\r\n"
-                real_head += f"Content-Length: {len(real.content)}\r\nConnection: close\r\n\r\n"
-                ssl_client.send(real_head.encode('utf-8') + real.content)
-                log_entry["status"] = real.status_code
-                log_entry["response_headers"] = dict(real.headers)
-                log_entry["response_body"] = real.content.decode('utf-8', errors='ignore')[:5000]
-                log_entry["passthrough"] = True
-                log_entry["delay_ms"] = delay_ms
+                print(f"[CONNECT] 真实报文: {real_url} 命中 {res['applied']}/{res['total']} 处"
+                      + ("（缓存）" if res["cache_hit"] else ""))
+                if delay_ms > 0:
+                    time.sleep(delay_ms / 1000.0)
+                real_head = f"HTTP/1.1 {res['status']} OK\r\n"
+                for k, v in _mock_patch_result_headers(res).items():
+                    real_head += f"{k}: {v}\r\n"
+                real_head += f"Content-Length: {len(res['content'])}\r\nConnection: close\r\n\r\n"
+                ssl_client.send(real_head.encode('utf-8') + res["content"])
+                log_entry.update({
+                    "status": res["status"],
+                    "response_headers": _mock_patch_log_headers(res["headers"]),
+                    "response_body": res["content"].decode('utf-8', errors='ignore')[:20000],
+                    "mode": "patch",
+                    "patch_applied": res["applied"],
+                    "patch_total": res["total"],
+                    "patch_error": res["err_detail"],
+                    "cache_hit": res["cache_hit"],
+                    "patch_confirm": res.get("confirm") or "",
+                    "patch_edited": bool(res.get("edited")),
+                    "delay_ms": delay_ms,
+                })
                 _save_proxy_log(log_entry)
                 try:
                     ssl_client.close()
@@ -6627,19 +7690,22 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
             _save_proxy_log(log_entry)
         else:
             # 路径不匹配或未配置本地 mock：记录未命中日志，便于排查"为什么没 mock"
-            _save_proxy_log({
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "method": method,
-                "path": target_host + request_path,
-                "matched": False,
-                "mapping_path": matched_actual_path,
-                "mapping_id": matched_remote.get("id"),
-                "response_name": None,
-                "status": 404,
-                "status_message": "",
-                "response_headers": {},
-                "response_body": None,
-            })
+            # （入参条件都没命中时不算未命中，直接回源，不记这条 404 日志）
+            if not when_miss:
+                _save_proxy_log({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "method": method,
+                    "path": target_host + request_path,
+                    "client_ip": client_addr[0] if client_addr else "",
+                    "matched": False,
+                    "mapping_path": matched_actual_path,
+                    "mapping_id": matched_remote.get("id"),
+                    "response_name": None,
+                    "status": 404,
+                    "status_message": "",
+                    "response_headers": {},
+                    "response_body": None,
+                })
             # 6b. 路径不匹配 → 用 requests 库转发到真实服务器
             try:
                 fwd_headers = {}
@@ -6683,6 +7749,9 @@ def handle_connect_tunnel(client_socket, target_host, target_port, client_addr=N
 
     except Exception as e:
         print(f"[CONNECT] 隧道处理异常: {type(e).__name__}: {e}")
+        # 客户端只会看到连接被掐断，真正原因必须落到诊断日志，否则“拦不住”无从排查
+        _save_proxy_debug("ERROR", client_addr[0] if client_addr else "",
+                          "MITM %s -> %s 抛异常 %s: %s" % (target_host, matched_actual_path or "/", type(e).__name__, e))
         try:
             client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
         except Exception:
@@ -6729,31 +7798,27 @@ def _open_dir_in_explorer(path):
 TRANSFER_DIR = os.path.join(_app_root, "transfer")
 os.makedirs(TRANSFER_DIR, exist_ok=True)
 
-# ═══ 统一配置文件：data/config.json ═══
-# 所有设置类配置（互传保存目录、记录条数上限、设备名称记忆等）统一保存在这一个文件里
+# ═══ 设置类配置：存于 data/settings.json 的 config 段落 ═══
+# 互传保存目录、记录条数上限、设备名称记忆等（原 data/config.json 已并入）
 DATA_DIR = os.path.join(_app_root, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
 
 def _load_config():
-    """读取统一配置文件 data/config.json"""
+    """读取设置类配置"""
     try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                cfg = json.load(f)
-            if isinstance(cfg, dict):
-                return cfg
+        cfg = _settings.load("config", {})
+        if isinstance(cfg, dict):
+            return cfg
     except Exception as e:
         print(f"  [配置读取失败] {e}")
     return {}
 
 
 def _save_config(cfg):
-    """保存统一配置文件 data/config.json"""
+    """保存设置类配置"""
     try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        _settings.save("config", cfg)
     except Exception as e:
         print(f"  [配置保存失败] {e}")
 
@@ -7481,6 +8546,48 @@ def _detect_video_codec(filepath):
         return 'other'
 
 
+def _video_height(filepath, ffmpeg=None):
+    """读视频高度：与录制三档（720p/1080p/原生）对齐的阶梯依据；失败返回 None"""
+    try:
+        if ffmpeg is None:
+            ffmpeg = _find_ffmpeg()
+        if not ffmpeg:
+            return None
+        ffprobe = os.path.join(os.path.dirname(ffmpeg), 'ffprobe.exe' if sys.platform == 'win32' else 'ffprobe')
+        if not os.path.exists(ffprobe):
+            ffprobe = 'ffprobe'   # 回退到 PATH 查找
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        r = subprocess.run([ffprobe, '-v', 'quiet', '-select_streams', 'v:0',
+                            '-show_entries', 'stream=height', '-of', 'csv=p=0', filepath],
+                           capture_output=True, text=True, timeout=30, startupinfo=si,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            return int(r.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _transcode_crf(filepath, ffmpeg=None):
+    """转码 CRF 阶梯：与录制三档对齐，二次压缩不再把档位差距抹平。
+
+    旧版转码统一 CRF 15：720p/1080p/原生三档录制时的码率差距被“洗”成
+    同一档，用户反馈“转码后画质没有任何区别”。现在按源高度分档：
+    ≤760→24（720p 档）、≤1120→20（1080p 档）、更高→15（原生档），
+    未知高度回落 20。
+    """
+    h = _video_height(filepath, ffmpeg)
+    if h is None:
+        return 20
+    if h <= 760:
+        return 24
+    if h <= 1120:
+        return 20
+    return 15
+
+
 def _transcode_to_h264(item):
     """后台线程：将 H.265 视频转码为 H.264（浏览器不支持 H.265 直接播放）"""
     try:
@@ -7491,9 +8598,11 @@ def _transcode_to_h264(item):
             return
         src = item['filepath']
         dst = os.path.splitext(src)[0] + '_h264.mp4'
-        # CRF 15 视觉无损级别，保证转码后画质与原片一致；preset medium 在画质与速度间取得最佳平衡
+        # CRF 按源分辨率阶梯（720p/1080p/原生 → 24/20/15）：档位差距在转码后依然保留；
+        # preset medium 在画质与速度间取得最佳平衡
+        crf = _transcode_crf(src, ffmpeg)
         cmd = [ffmpeg, '-y', '-i', src,
-               '-c:v', 'libx264', '-preset', 'medium', '-crf', '15',
+               '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
                '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', dst]
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -8838,11 +9947,49 @@ RECORD_STATUS_FILE = os.path.join(_DATA_DIR_REC, '_record_status.json')
 import threading as _threading
 _record_status_lock = _threading.Lock()
 
+# 帧率：界面已固定 30fps（录制只追求流畅度，不做档位选择），三档仅保留给 API/CLI 兼容。
+# 30 档在 dxcam(DXGI) 下 1080p 实测 50+fps；即使回退到 GDI，录制器也会自校准到
+# 实际可达帧率，不会产出加速片
+RECORD_FPS_TIERS = (10, 20, 30)
+RECORD_FPS_DEFAULT = 30
+
+
+def _snap_record_fps(value):
+    """把任意历史值/非法值归到三档（旧值 10/15 归 10、20/24 归 20、≥25 归 30）"""
+    try:
+        n = int(value)
+    except Exception:
+        return RECORD_FPS_DEFAULT
+    if n <= 14:
+        return 10
+    if n >= 25:
+        return 30
+    return 20
+
+
+# 画质档：按输出分辨率命名（720p / 1080p / 原生），同时决定编码 CRF。
+# 旧版本用 OpenCV 的 avc1 编码，1080p 只有 2-4Mbps，文字边缘全糊——
+# 现在录制器改用 ffmpeg/libx264，降采样与编码保真度都按这一档走
+RECORD_QUALITY_TIERS = ('standard', 'hd', 'uhd')
+RECORD_QUALITY_DEFAULT = 'hd'
+
+
+def _snap_record_quality(value):
+    key = str(value or '').strip().lower()
+    if key in RECORD_QUALITY_TIERS:
+        return key
+    alias = {'标准': 'standard', '高清': 'hd', '超清': 'uhd',
+             '720p': 'standard', '1080p': 'hd', '原生': 'uhd', 'native': 'uhd',
+             'high': 'hd', 'ultra': 'uhd', 'best': 'uhd', '1080': 'hd', '720': 'standard'}
+    return alias.get(key, RECORD_QUALITY_DEFAULT)
+
+
 _DEFAULT_REC_STATUS = {
     "recording": False, "paused": False, "click_count": 0,
     "start_time": 0, "last_finished_at": 0, "last_file": "",
     "panel_visible": False, "panel_pid": 0, "panel_pos": None,
     "panel_wake_ts": 0, "pending_fps": None, "pending_save_dir": None,
+    "pending_quality": None,
 }
 
 
@@ -8908,6 +10055,36 @@ def _publish_record_event(evt):
 _record_process = None  # 当前录制进程（CLI 模式）
 _record_panel_process = None  # 当前录制控制面板进程
 
+
+def _panel_alive():
+    """录制控制面板进程是否存活（录制也可以由它内部完成）"""
+    return bool(_record_panel_process and _record_panel_process.poll() is None)
+
+
+def _reap_dead_recording():
+    """面板进程已退出但状态文件还是 recording=true：把脏状态复位
+
+    面板崩溃（PyQt5 未捕获异常会直接 abort 进程）来不及写 recording=False，
+    网页就会永远停在“录制中”；而此时 /api/record/stop 找不到进程又返回 404，
+    用户等于彻底没有停止入口。这里以“进程是否存活”为准做兜底。
+    面板还活着时绝不能动：那种情况下录制由面板进程执行，复位等于把真录制丢掉。
+    """
+    global _record_process
+    if _record_process is not None and _record_process.poll() is None:
+        return False
+    if _panel_alive():
+        return False
+    st = _read_record_status()
+    if not st.get('recording'):
+        return False
+    _record_process = None
+    _write_record_status(recording=False, paused=False, panel_pid=0,
+                         panel_visible=False, last_finished_at=time.time())
+    _publish_record_event({'type': 'stopped', 'file': st.get('last_file') or '',
+                           'ts': time.time(), 'reaped': True})
+    print("[录制] 录制进程已退出，已自动复位状态（recording=False）")
+    return True
+
 # ── 录制工具解释器解析 ──
 # 面板/录制器需要 mss / cv2 / PyQt5。若服务是用依赖不全的 Python 启动的（如 PATH 里的裸
 # python），子进程会秒退导致"工具栏打不开"，Web 端却仍提示已打开。这里启动前探测解释器：
@@ -8972,19 +10149,38 @@ def api_record_panel_open():
     """
     global _record_panel_process
     body = (request.get_json(silent=True) or {})
-    fps = body.get('fps', 15)
-    try:
-        fps = min(max(5, int(fps)), 30)
-    except Exception:
-        fps = 15
+    fps = _snap_record_fps(body.get('fps', RECORD_FPS_DEFAULT))
+    quality = _snap_record_quality(body.get('quality', RECORD_QUALITY_DEFAULT))
 
-    # 面板进程存活：写唤醒信号 + pending_fps，不重启
+    # 面板进程存活：写唤醒信号 + pending_fps/pending_quality，不重启
     if _record_panel_process and _record_panel_process.poll() is None:
-        _write_record_status(panel_wake_ts=time.time(), pending_fps=fps)
-        return jsonify({
-            "ok": True, "message": "面板已唤醒", "reused": True,
-            "pid": _record_panel_process.pid, "fps": fps
-        })
+        st = _read_record_status()
+        # 代码热更新：面板是常驻进程，改完代码后“唤醒”旧进程等于继续跑旧逻辑
+        # （曾因此让“点外面就崩”的老版本一直生效）。非录制中时直接换新进程。
+        if not _IS_EXE and not st.get('recording'):
+            try:
+                cur_mtime = os.path.getmtime(os.path.join(SRC_DIR, 'recorder_tool', 'control_panel.py'))
+            except Exception:
+                cur_mtime = 0
+            old_mtime = st.get('panel_script_mtime') or 0
+            if cur_mtime and old_mtime and abs(cur_mtime - old_mtime) > 0.5:
+                try:
+                    _record_panel_process.terminate()
+                    _record_panel_process.wait(timeout=3)
+                except Exception:
+                    try:
+                        _record_panel_process.kill()
+                    except Exception:
+                        pass
+                _record_panel_process = None
+                print("[录制] 面板代码已更新，重启工具栏进程")
+        if _record_panel_process and _record_panel_process.poll() is None:
+            _write_record_status(panel_wake_ts=time.time(), pending_fps=fps,
+                                 pending_quality=quality)
+            return jsonify({
+                "ok": True, "message": "面板已唤醒", "reused": True,
+                "pid": _record_panel_process.pid, "fps": fps, "quality": quality
+            })
 
     # 启动新面板（使用含 mss/cv2/PyQt5 的解释器，且 stderr 落盘便于排障）
     py_exe = _resolve_recorder_python()
@@ -8995,7 +10191,7 @@ def api_record_panel_open():
             "或在缺少依赖的解释器中执行: pip install mss opencv-python PyQt5 numpy"
         )}), 500
     try:
-        panel_args = ['--fps', str(fps),
+        panel_args = ['--fps', str(fps), '--quality', quality,
                       '--save-dir', RECORD_DIR, '--api-port', str(PORT)]
         if _IS_EXE:
             # 打包版：复用 exe 本体以内部命令分派启动面板（见文件顶部 __panel__ 分派）
@@ -9025,8 +10221,9 @@ def api_record_panel_open():
                 return jsonify({"ok": False, "error": (
                     "工具栏进程启动即退出。详情: " + (tail or "无输出")
                 )}), 500
-        _write_record_status(pending_fps=fps)
-        return jsonify({"ok": True, "pid": _record_panel_process.pid, "fps": fps, "reused": False})
+        _write_record_status(pending_fps=fps, pending_quality=quality)
+        return jsonify({"ok": True, "pid": _record_panel_process.pid, "fps": fps,
+                        "quality": quality, "reused": False})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -9052,14 +10249,15 @@ def api_record_settings():
     """获取/设置录制配置
 
     F5: POST 时同时写 pending_save_dir，面板轮询后切换（无需重启）
-    A3: 也支持写 pending_fps
+    A3: 也支持写 pending_fps / pending_quality
     """
     global RECORD_DIR
     if request.method == 'GET':
         st = _read_record_status()
         return jsonify({
             "ok": True, "save_dir": RECORD_DIR,
-            "fps": st.get("pending_fps") or 15
+            "fps": _snap_record_fps(st.get("pending_fps") or RECORD_FPS_DEFAULT),
+            "quality": _snap_record_quality(st.get("pending_quality") or RECORD_QUALITY_DEFAULT),
         })
     data = (request.get_json(silent=True) or {})
     updates = {}
@@ -9076,13 +10274,12 @@ def api_record_settings():
         RECORD_DIR = new_dir
         updates['pending_save_dir'] = new_dir
     if 'fps' in data:
-        try:
-            updates['pending_fps'] = min(max(5, int(data['fps'])), 30)
-        except Exception:
-            pass
+        updates['pending_fps'] = _snap_record_fps(data['fps'])
+    if 'quality' in data:
+        updates['pending_quality'] = _snap_record_quality(data['quality'])
     if updates:
         _write_record_status(**updates)
-    # F5: applied 表示面板已存活（pending_fps/pending_save_dir 将被面板轮询拿到）
+    # F5: applied 表示面板已存活（pending_* 将被面板轮询拿到）
     panel_alive = bool(_record_panel_process and _record_panel_process.poll() is None)
     return jsonify({"ok": True, "save_dir": RECORD_DIR, "applied": panel_alive})
 
@@ -9124,10 +10321,12 @@ def api_record_start():
     global _record_process
     if _record_process and _record_process.poll() is None:
         return jsonify({"ok": False, "error": "录制已在进行中"}), 409
+    # 上一轮面板异常退出留下的“录制中”脏状态先清掉，否则前端会误以为录制还在跑
+    _reap_dead_recording()
 
     body = (request.get_json(silent=True) or {})
-    fps = body.get('fps', 15)
-    fps = min(max(5, int(fps)), 30)
+    fps = _snap_record_fps(body.get('fps', RECORD_FPS_DEFAULT))
+    quality = _snap_record_quality(body.get('quality', RECORD_QUALITY_DEFAULT))
     mode = body.get('mode', 'full')
     if mode not in ('full', 'region'):
         mode = 'full'
@@ -9139,7 +10338,8 @@ def api_record_start():
                 "未找到包含 mss / opencv-python / PyQt5 的 Python 环境，无法启动录制。"
                 "请用项目 .venv 的 python 启动服务（启动.bat 已自动优先使用）"
             )}), 500
-        rec_args = ['--fps', str(fps), '--save-dir', RECORD_DIR, '--mode', mode]
+        rec_args = ['--fps', str(fps), '--quality', quality,
+                    '--save-dir', RECORD_DIR, '--mode', mode]
         if _IS_EXE:
             # 打包版：复用 exe 本体以内部命令分派启动录制（见文件顶部 __recorder__ 分派）
             cmd = [sys.executable, '__recorder__'] + rec_args
@@ -9151,17 +10351,34 @@ def api_record_start():
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        return jsonify({"ok": True, "pid": _record_process.pid, "fps": fps, "mode": mode})
+        return jsonify({"ok": True, "pid": _record_process.pid, "fps": fps,
+                        "quality": quality, "mode": mode})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/record/stop", methods=["POST"])
 def api_record_stop():
-    """停止屏幕录制"""
+    """停止屏幕录制
+
+    面板存活时下发“停止请求”让面板自己优雅收尾（release writer、写状态、推 SSE），
+    不要直接 TerminateProcess —— 那会把 ffmpeg 正在写的文件截断。
+    面板已崩溃时也要能收尾：复位脏状态并返回成功，否则页面永远卡在“录制中”。
+    """
     global _record_process
+    st = _read_record_status()
+    if _panel_alive() and st.get('recording'):
+        _write_record_status(stop_request_ts=time.time())
+        for _ in range(60):          # 面板 500ms 轮询一次，最多等 6 秒
+            time.sleep(0.1)
+            if not _read_record_status().get('recording'):
+                return jsonify({"ok": True, "graceful": True})
+
     if not _record_process or _record_process.poll() is not None:
         _record_process = None
+        if _reap_dead_recording():
+            return jsonify({"ok": True, "reaped": True,
+                            "message": "录制进程已退出，已复位状态"})
         return jsonify({"ok": False, "error": "没有正在进行的录制"}), 404
 
     try:
@@ -9181,6 +10398,7 @@ def api_record_stop():
 def api_record_status():
     """获取录制状态（F4: 同时包含面板存活信息）"""
     global _record_panel_process
+    _reap_dead_recording()   # 面板崩溃留下的“录制中”脏状态，轮询时自动收尾
     running = bool(_record_process and _record_process.poll() is None)
     panel_alive = bool(_record_panel_process and _record_panel_process.poll() is None)
     if not panel_alive:
@@ -9249,10 +10467,28 @@ def api_record_transcode():
     return jsonify({"ok": True, "message": "转码已启动"})
 
 
+def _transcode_ready(filepath, transcode_path):
+    """转码副本是否可用：存在 + 比原片新 + 转码参数版本匹配
+
+    旧版用 veryfast/CRF 26 生成过一批“优化版”，1080p 被压到 0.3Mbps，文字全糊。
+    参数升级后用标记文件区分版本，旧副本自动失效并重新转码。
+    标记必须与副本同名（xxx.mp4.params）：目录级共用一份会导致“一个文件转完，
+    其它历史文件的旧糊副本也被当成已优化”而继续播放模糊版本。
+    """
+    if not (os.path.exists(transcode_path) and os.path.getmtime(transcode_path) >= os.path.getmtime(filepath)):
+        return False
+    try:
+        with open(transcode_path + _TRANSCODE_TAG_FILE, 'r', encoding='utf-8') as f:
+            return f.read().strip() == _TRANSCODE_TAG
+    except Exception:
+        return False
+
+
 def _async_transcode(filename):
     """异步转码录制文件（不阻塞主线程）
 
-    E3: 针对屏幕录制内容优化 ffmpeg 参数（veryfast + crf 26 + tune stillimage）
+    只服务 H.265 / MPEG-4 这类浏览器放不了的源：H.264 源仅无损重封装，
+    不做有损重编码（二次压缩会让文字变糊）。
     去重：_transcode_inflight 避免同一文件重复启动转码
     """
     if filename in _transcode_inflight:
@@ -9267,7 +10503,7 @@ def _async_transcode(filename):
             transcode_dir = os.path.join(RECORD_DIR, '_transcoded')
             os.makedirs(transcode_dir, exist_ok=True)
             transcode_path = os.path.join(transcode_dir, filename)
-            if os.path.exists(transcode_path) and os.path.getmtime(transcode_path) >= os.path.getmtime(filepath):
+            if _transcode_ready(filepath, transcode_path):
                 return
             ffmpeg_exe = _find_ffmpeg()
             if not ffmpeg_exe:
@@ -9278,21 +10514,34 @@ def _async_transcode(filename):
                 else:
                     print("[录制] ffmpeg 不可用，跳过转码")
                     return
-            # E3: veryfast + crf 26 + tune stillimage（屏幕内容体积更小、画质更好）
-            cmd = [
-                ffmpeg_exe, '-y', '-i', filepath,
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26',
-                '-tune', 'stillimage', '-g', '60',
-                '-movflags', '+faststart',
-                '-pix_fmt', 'yuv420p',
-                transcode_path
-            ]
+            # 已经是浏览器可直放的 H.264：只做无损重封装（movflags faststart），绝不重新压缩；
+            # 旧版这里用 CRF 26 重编一遍，1080p 录制被压到 0.3Mbps，文字全糊（“1080p 还是很模糊”的元凶）
+            codec = _detect_video_codec(filepath)
+            if codec == 'h264':
+                out_args = ['-c', 'copy', '-movflags', '+faststart']
+            else:
+                # H.265 / MPEG-4 → H.264：CRF 16 + medium，保文字锐度
+                out_args = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '16',
+                            '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-g', '60',
+                            '-movflags', '+faststart']
+            # 先写临时文件再替换：避免覆盖时正好在播放/复制导致读到半成品。
+            # 必须显式 -f mp4：临时文件是 .part 后缀，ffmpeg 推断不出容器格式会直接失败
+            tmp_path = transcode_path + '.part'
+            cmd = [ffmpeg_exe, '-y', '-i', filepath] + out_args + ['-f', 'mp4', tmp_path]
             print(f"[录制] 异步转码: {filename}")
             result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode == 0 and os.path.exists(transcode_path):
+            if result.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                os.replace(tmp_path, transcode_path)
+                with open(transcode_path + _TRANSCODE_TAG_FILE, 'w', encoding='utf-8') as f:
+                    f.write(_TRANSCODE_TAG)
                 print(f"[录制] 转码完成: {transcode_path} ({os.path.getsize(transcode_path)} bytes)")
                 _publish_record_event({'type': 'transcoded', 'file': filename, 'ts': time.time()})
             else:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
                 err = result.stderr.decode('utf-8', errors='ignore')[-500:] if result.stderr else 'unknown'
                 print(f"[录制] 转码失败: {err}")
                 _publish_record_event({'type': 'transcode_failed', 'file': filename, 'ts': time.time()})
@@ -9307,6 +10556,106 @@ def _async_transcode(filename):
 
 # E1: 正在转码中的文件（避免重复启动）
 _transcode_inflight = set()
+# 转码参数版本：改动 ffmpeg 参数时必须同步修改，旧的“优化版”会因此失效重转
+# 标记文件与副本同名：_transcoded/<name>.mp4.params
+_TRANSCODE_TAG = 'h264-crf16-medium-v2'
+_TRANSCODE_TAG_FILE = '.params'
+
+
+def _mp4_mvhd_duration(f, start, length):
+    """在 moov 的子 box 里找 mvhd（通常是第一个），返回秒数"""
+    cur = start
+    end = start + length
+    while cur + 8 <= end:
+        f.seek(cur)
+        hdr = f.read(8)
+        if len(hdr) < 8:
+            return None
+        size = int.from_bytes(hdr[:4], 'big')
+        btype = hdr[4:8]
+        hdr_len = 8
+        if size == 1:
+            ext = f.read(8)
+            if len(ext) < 8:
+                return None
+            size = int.from_bytes(ext, 'big')
+            hdr_len = 16
+        elif size == 0:
+            size = end - cur
+        if size < hdr_len:
+            return None
+        if btype == b'mvhd':
+            body = f.read(min(size - hdr_len, 32))
+            if body[0] == 1:              # version 1：64 位时间戳与时长
+                timescale = int.from_bytes(body[20:24], 'big')
+                duration = int.from_bytes(body[24:32], 'big')
+            else:                          # version 0
+                timescale = int.from_bytes(body[12:16], 'big')
+                duration = int.from_bytes(body[16:20], 'big')
+            if timescale:
+                return duration / float(timescale)
+            return None
+        cur += size
+    return None
+
+
+def _mp4_duration(filepath):
+    """读 MP4 的 mvhd 拿时长（秒）：纯 box 解析，不起 ffprobe 进程"""
+    try:
+        total = os.path.getsize(filepath)
+        with open(filepath, 'rb') as f:
+            pos = 0
+            while pos + 8 <= total:
+                f.seek(pos)
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    return None
+                size = int.from_bytes(hdr[:4], 'big')
+                btype = hdr[4:8]
+                hdr_len = 8
+                if size == 1:
+                    ext = f.read(8)
+                    if len(ext) < 8:
+                        return None
+                    size = int.from_bytes(ext, 'big')
+                    hdr_len = 16
+                elif size == 0:
+                    size = total - pos
+                if size < hdr_len:
+                    return None
+                if btype == b'moov':
+                    return _mp4_mvhd_duration(f, pos + hdr_len, size - hdr_len)
+                pos += size
+    except Exception:
+        return None
+    return None
+
+
+def _video_duration(filepath):
+    """视频时长（秒）：mp4/mov 直接读 mvhd；其它容器退回 ffprobe。取不到返回 None"""
+    if filepath.lower().endswith(('.mp4', '.m4v', '.mov')):
+        d = _mp4_duration(filepath)
+        if d:
+            return d
+    try:
+        ffmpeg = _find_ffmpeg()
+        if not ffmpeg:
+            return None
+        ffprobe = os.path.join(os.path.dirname(ffmpeg), 'ffprobe.exe' if sys.platform == 'win32' else 'ffprobe')
+        if not os.path.exists(ffprobe):
+            ffprobe = 'ffprobe'   # 回退到 PATH 查找
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        r = subprocess.run([ffprobe, '-v', 'quiet', '-show_entries', 'format=duration',
+                            '-of', 'csv=p=0', filepath],
+                           capture_output=True, text=True, timeout=15, startupinfo=si,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
+        if r.returncode == 0 and r.stdout.strip():
+            return float(r.stdout.strip())
+    except Exception:
+        pass
+    return None
 
 
 @app.route("/api/record/list")
@@ -9319,7 +10668,9 @@ def api_record_list():
             if f.lower().endswith(('.mp4', '.avi', '.mkv', '.mov')):
                 fp = os.path.join(RECORD_DIR, f)
                 tp = os.path.join(transcode_dir, f)
-                if os.path.exists(tp) and os.path.getmtime(tp) >= os.path.getmtime(fp):
+                if _detect_video_codec(fp) == 'h264':
+                    tstatus = 'native'          # H.264 原片浏览器直放，不需要优化
+                elif _transcode_ready(fp, tp):
                     tstatus = 'done'
                 elif f in _transcode_inflight:
                     tstatus = 'processing'
@@ -9329,6 +10680,7 @@ def api_record_list():
                     "name": f,
                     "size": os.path.getsize(fp),
                     "time": datetime.fromtimestamp(os.path.getmtime(fp)).strftime('%Y-%m-%d %H:%M:%S'),
+                    "duration": _video_duration(fp),
                     "transcode_status": tstatus
                 })
     return jsonify({"ok": True, "recordings": files})
@@ -9378,8 +10730,9 @@ def api_record_file(filename):
     """获取录制文件
 
     E1 优化：不再同步阻塞转码（旧逻辑最坏卡 120s）：
-      1) 如果转码文件已就绪 → 直接返回（支持 Range）
-      2) 如果原文件已是 faststart → 直接返回原文件
+      0) 原文件已是 H.264 → 直接返回原片（浏览器可直接放，绝不二次压缩）
+      1) 否则如果转码文件已就绪 → 返回（支持 Range）
+      2) 否则如果原文件已是 faststart → 直接返回原文件
       3) 否则启动异步转码并返回 202，前端展示 loading、轮询或监听 SSE
     """
     if '..' in filename or '/' in filename or '\\' in filename:
@@ -9392,8 +10745,13 @@ def api_record_file(filename):
     os.makedirs(transcode_dir, exist_ok=True)
     transcode_path = os.path.join(transcode_dir, filename)
 
-    # 1) 已转码 → 直接返回
-    if os.path.exists(transcode_path) and os.path.getmtime(transcode_path) >= os.path.getmtime(filepath):
+    # 0) H.264 原片直放：优先原文件，不用 _transcoded 里的优化版
+    #    （曾因优先返回 CRF 26 的转码版，1080p 录制被降成 0.3Mbps，文字全糊）
+    if _detect_video_codec(filepath) == 'h264':
+        return send_from_directory(RECORD_DIR, filename, conditional=True)
+
+    # 1) 已转码（且参数版本匹配）→ 直接返回
+    if _transcode_ready(filepath, transcode_path):
         return send_from_directory(transcode_dir, filename, conditional=True)
 
     # 2) E2: 原文件已是 faststart，无需转码
@@ -9439,9 +10797,10 @@ def api_record_copy():
     filepath = os.path.join(RECORD_DIR, filename)
     if not os.path.exists(filepath):
         return jsonify({"ok": False, "error": "文件不存在"}), 404
-    # 优先转码优化版（与文件互传 copy-video 的策略一致）
+    # 优先原片：H.264 原片浏览器直放，复制出去就是最清晰的那份；
+    # 只有浏览器放不了的源（H.265/MPEG-4）才用转码版
     transcode_path = os.path.join(RECORD_DIR, '_transcoded', filename)
-    if os.path.exists(transcode_path) and os.path.getmtime(transcode_path) >= os.path.getmtime(filepath):
+    if _detect_video_codec(filepath) != 'h264' and _transcode_ready(filepath, transcode_path):
         target, version = transcode_path, 'optimized'
     else:
         target, version = filepath, 'original'
@@ -9657,29 +11016,26 @@ _scheduler.start_worker()
 #  抓包引擎（mitmproxy）与流量缓冲
 #  设计约束：引擎绝不随主服务自动启动，仅界面手动启停；
 #  主服务退出时自动停止，不留残留进程。
-#  端口可在界面修改并持久化（data/_capture_config.json），
+#  端口可在界面修改并持久化（data/settings.json 的 capture 段落），
 #  优先级：界面保存的配置 > 环境变量 CAPTURE_PORT > 默认 8899。
 # ═══════════════════════════════════════════════════
 
-_CAPTURE_CONFIG_FILE = os.path.join(DATA_DIR, "_capture_config.json")
-
+# 抓包配置（端口等）：存于 data/settings.json 的 capture 段落（原 data/_capture_config.json）
+# 引擎自身的 _capture_engine/_scope/_mock 仍为独立文件：mitmproxy 子进程直读，跨进程不能并
 
 def _load_capture_config():
     """读取抓包配置（端口等），文件缺失/损坏时返回空字典"""
     try:
-        with open(_CAPTURE_CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        cfg = _settings.load("capture", {})
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 
 
 def _save_capture_config(cfg):
-    """保存抓包配置（文件锁保护），返回是否成功"""
+    """保存抓包配置，返回是否成功"""
     try:
-        with _file_lock(_CAPTURE_CONFIG_FILE):
-            with open(_CAPTURE_CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        _settings.save("capture", cfg)
         return True
     except Exception as e:
         print(f"[Capture] 配置保存失败: {e}")
@@ -9990,7 +11346,7 @@ _TF_TOKEN_TTL = 12 * 3600   # 令牌有效期（小时级，避免传输中途�
 _TF_MAX_FAIL = 5            # 同一来源连续错码上限
 _TF_LOCK_SEC = 300          # 达到上限后锁定 5 分钟
 # 校验码与令牌落盘：工具重启后手机端不必重新输码（否则每次重启都要回到输码页，容易被误认为"收不到消息"）
-_TF_STATE_FILE = os.path.join(DATA_DIR, "_transfer_guard.json")
+# 存于 data/settings.json 的 transfer_guard 段落（原 data/_transfer_guard.json）
 # 门禁自身接口：不要求令牌，否则手机端无法完成验证（各自内部再做本机限制）
 _TF_GUARD_PATHS = (
     "/api/transfer/verify",
@@ -10004,10 +11360,9 @@ _TF_GUARD_PATHS = (
 def _tf_state_load():
     """启动时恢复校验码与未过期令牌"""
     try:
-        if not os.path.exists(_TF_STATE_FILE):
+        d = _settings.load("transfer_guard", {})
+        if not isinstance(d, dict):
             return
-        with open(_TF_STATE_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
         code = str(d.get("code") or "")
         now = time.time()
         with _TF_GUARD_LOCK:
@@ -10035,10 +11390,7 @@ def _tf_state_save():
                 "epoch": _TF_GUARD.get("epoch", 0),
                 "tokens": {k: v for k, v in _TF_TOKENS.items() if v > now},
             }
-        tmp = _TF_STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        os.replace(tmp, _TF_STATE_FILE)
+        _settings.save("transfer_guard", data)
     except Exception:
         pass
 
@@ -10069,6 +11421,10 @@ def _is_external_request():
     - 隧道场景（cloudflared / frp）：请求由本机回连，Host 与 X-Forwarded-Host 是公网域名 → 外网
     - 端口映射直连：来源地址本身就是公网 IP → 外网
     - 局域网手机扫码：全部是 192.168.x.x → 内网，免校验
+
+    注意：经「代理 Mock」入口（5050）转发的绝对 URI 请求不适用 Host 判定——
+    这类请求的 Host 是目标业务域名（如 mebcentertest.bestwehotel.com），
+    按它判外网会把所有代理流量 403 掉（HTTP Mock 全失效），只能看来源地址。
     """
     remote = str(request.remote_addr or "").strip()
     if remote and not _ip_is_lan(remote):
@@ -10077,6 +11433,10 @@ def _is_external_request():
     xff = str(request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
     if xff and not _ip_is_lan(xff):
         return True
+    # 代理请求（绝对 URI 形式）：来源已由上面两项判过，Host 是目标域名，不再参与判定
+    raw_uri = request.environ.get("REQUEST_URI", "") or request.environ.get("RAW_URI", "") or ""
+    if raw_uri.startswith(("http://", "https://")):
+        return False
     host = str(request.headers.get("X-Forwarded-Host") or request.host or "").split(":")[0]
     if not host:
         return False
@@ -10799,6 +12159,28 @@ def _capture_mock_match(mappings, method, host, path):
     return None
 
 
+def _capture_mock_clean_patches(patches):
+    """字段覆盖项清洗：只留 path/op/value/json，空路径与非法项丢弃
+
+    写法与代理 Mock（_mock_patch_apply）完全一致：$.data.orderId / $.list[0].x，
+    值默认按 JSON 解析（数字/布尔/对象），op=delete 时删除字段。
+    """
+    out = []
+    for p in patches if isinstance(patches, list) else []:
+        if not isinstance(p, dict):
+            continue
+        path = str(p.get("path") or "").strip()[:300]
+        if not path:
+            continue
+        op = "delete" if str(p.get("op") or "").lower() == "delete" else "set"
+        item = {"path": path, "op": op}
+        if op == "set":
+            item["value"] = p.get("value", "")
+            item["json"] = p.get("json", True) is not False
+        out.append(item)
+    return out[:200]
+
+
 @app.route("/api/capture/mock/rules", methods=["GET", "POST"])
 def api_capture_mock_rules():
     """抓包改包 Mock 规则库：GET 读取 / POST 全量保存（改包 Mock 视图列表用）"""
@@ -10843,6 +12225,11 @@ def api_capture_mock_lookup():
             "status_message": cur.get("status_message") or "",
             "headers": cur.get("headers") if isinstance(cur.get("headers"), dict) else {},
             "body": cur.get("body") if cur.get("body") is not None else "",
+            # 响应模式：mock=直接返回配置报文 / patch=真实响应+只改指定字段
+            "mode": "patch" if str(cur.get("mode") or "").lower() == "patch" else "mock",
+            "patches": cur.get("patches") if isinstance(cur.get("patches"), list) else [],
+            # 命中时暂停：真实响应先挂起，页面确认后才回给客户端（与代理 Mock 同语义、各自通道）
+            "confirm": bool(cur.get("confirm")),
         },
     })
 
@@ -10852,6 +12239,8 @@ def api_capture_mock_save():
     """详情页「设置 Mock 返回」：为指定接口创建/更新改包 Mock 规则
 
     - 已存在同接口规则时更新其激活响应报文（保留响应名与延时），否则新建规则；
+    - mode=mock 时直接返回配置报文；mode=patch 时真实响应回包后只覆盖 patches 指定字段
+      （此时状态码/头部/body 仍保存，便于切回 mock 时恢复）；
     - 响应头剔除 content-length / content-encoding / transfer-encoding 等（随 body 变化须重算）；
     - body 可解析为合法 JSON 时存对象（与规则库格式一致）；
     - 保存后自动开启「改包 Mock 拦截」总开关，配置 0.5s 内对引擎生效。
@@ -10880,6 +12269,11 @@ def api_capture_mock_save():
         except Exception:
             pass
 
+    # 响应模式：patch 时状态码/头部/body 不参与拦截，真正生效的是 patches 字段表
+    mode = "patch" if str(data.get("mode") or "").strip().lower() == "patch" else "mock"
+    patches = _capture_mock_clean_patches(data.get("patches")) if mode == "patch" else []
+    confirm = bool(data.get("confirm")) and mode == "patch"
+
     cfg = _load_capture_mock_rules()
     mappings = cfg.setdefault("mappings", [])
     m = _capture_mock_match(mappings, method, host, path)
@@ -10898,6 +12292,9 @@ def api_capture_mock_save():
         entry["status_message"] = status_message
         entry["headers"] = headers
         entry["body"] = body
+        entry["mode"] = mode
+        entry["patches"] = patches
+        entry["confirm"] = confirm
         responses[idx] = entry
         m["enabled"] = True
         if not (m.get("host") or "").strip():
@@ -10912,7 +12309,7 @@ def api_capture_mock_save():
             "responses": [{
                 "name": "详情设置 " + datetime.now().strftime("%m-%d %H:%M:%S"),
                 "status": status, "status_message": status_message, "headers": headers,
-                "body": body, "delay_ms": 0,
+                "body": body, "delay_ms": 0, "mode": mode, "patches": patches, "confirm": confirm,
             }],
         })
         created = True
@@ -10924,7 +12321,7 @@ def api_capture_mock_save():
     if not eng["mock"].get("enabled"):
         eng["mock"]["enabled"] = True
         _save_capture_engine_cfg(eng)
-    return jsonify({"ok": True, "rule_id": rule_id, "created": created})
+    return jsonify({"ok": True, "rule_id": rule_id, "created": created, "mode": mode, "confirm": confirm})
 
 
 @app.route("/api/capture/mock/remove", methods=["POST"])
@@ -10960,16 +12357,24 @@ def api_capture_bp_hit():
     bp_id = "bp_" + os.urandom(6).hex()
     event = threading.Event()
     now = time.time()
+    # 超时可由 addon 指定（改包 Mock 确认 60s；普通断点仍沿用 300s），避免客户端挂太久
+    try:
+        timeout = int(data.get("timeout") or _CAPTURE_BP_TIMEOUT)
+    except Exception:
+        timeout = _CAPTURE_BP_TIMEOUT
+    timeout = max(5, min(timeout, _CAPTURE_BP_TIMEOUT))
     info = {
         "id": bp_id,
         "phase": data.get("phase") or "request",
         "flow": data.get("flow") or {},
         "hit_time": datetime.now().strftime("%H:%M:%S"),
-        "deadline": now + _CAPTURE_BP_TIMEOUT,
+        "deadline": now + timeout,
+        "kind": data.get("kind") or "",        # mock-confirm = 改包 Mock 的人工确认
+        "note": data.get("note") or "",
     }
     with _capture_bp_lock:
         _capture_bp_pending[bp_id] = {"event": event, "decision": None, "info": info}
-    event.wait(timeout=_CAPTURE_BP_TIMEOUT)
+    event.wait(timeout=timeout)
     with _capture_bp_lock:
         entry = _capture_bp_pending.pop(bp_id, None)
     decision = (entry or {}).get("decision") or {"action": "continue"}  # 超时/异常默认放行
@@ -11872,6 +13277,63 @@ def _cleanup_capture_on_exit():
 atexit.register(_cleanup_capture_on_exit)
 
 
+# ════════ 手机投屏（小工具页签内嵌 127.0.0.1:9300） ════════
+# 采集与点击都在独立的 Node 服务里（src/phone_mirror）：adb + scrcpy 取 H.264，浏览器 WebCodecs 解码。
+# 这里只负责「第一次点开页签时把它拉起来」，画面与控制不经过 Flask。
+_PHONE_MIRROR_DIR = os.path.join(_entry_dir, "src", "phone_mirror")
+_PHONE_MIRROR_PORT = 9300
+_phone_mirror_proc = None
+_phone_mirror_lock = threading.Lock()
+
+
+def _phone_mirror_ready(timeout=0.35):
+    """9300 是否已在监听（只探本机回环，不跨网）"""
+    try:
+        with socket.create_connection(("127.0.0.1", _PHONE_MIRROR_PORT), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+@app.route("/api/phone-mirror/ensure", methods=["POST"])
+def api_phone_mirror_ensure():
+    """小工具 → 手机投屏：服务在就直接给地址，不在就拉起 node server.js 并等它就绪"""
+    global _phone_mirror_proc
+    url = "http://127.0.0.1:%d/" % _PHONE_MIRROR_PORT
+    if _phone_mirror_ready():
+        return jsonify({"ok": True, "url": url})
+
+    server_js = os.path.join(_PHONE_MIRROR_DIR, "server.js")
+    if not os.path.isfile(server_js):
+        return jsonify({"ok": False, "message": "缺少投屏服务文件：src/phone_mirror/server.js"})
+
+    with _phone_mirror_lock:
+        if _phone_mirror_ready():  # 并发点开时，等锁期间可能已被拉起来
+            return jsonify({"ok": True, "url": url})
+        # 优先用 src/phone_mirror 自带依赖；node 走 PATH（用户装过 node 才有）
+        import shutil as _shutil
+        node_bin = _shutil.which("node")
+        if not node_bin:
+            return jsonify({"ok": False, "message": "未找到 node，请先安装 Node.js 18+ 后重试"})
+        try:
+            _phone_mirror_proc = subprocess.Popen(
+                [node_bin, server_js],
+                cwd=_PHONE_MIRROR_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            return jsonify({"ok": False, "message": "启动投屏服务失败：%s" % e})
+        for _ in range(24):  # 最多等 6 秒，冷启动要 npm 之外的 ws 已就位
+            if _phone_mirror_ready(0.2):
+                return jsonify({"ok": True, "url": url})
+            if _phone_mirror_proc.poll() is not None:
+                return jsonify({"ok": False, "message": "投屏服务启动后立即退出，请在该目录执行 node server.js 查看报错"})
+            time.sleep(0.25)
+    return jsonify({"ok": False, "message": "投屏服务 6 秒内未就绪"})
+
+
 if __name__ == "__main__":
     import webbrowser
     print(f"\n  工具箱 Web 界面")
@@ -11921,36 +13383,70 @@ if __name__ == "__main__":
             print(f"  [提示] 浏览器未自动打开，请手动访问: {url}")
     threading.Thread(target=open_browser, daemon=True).start()
     
-    # 启动 HTTPS 代理服务器（监听 CONNECT 请求）
+    # 启动代理端口 5051（单口：HTTP 转交 5050，HTTPS 走 CONNECT 隧道）
+    def _handle_proxy_client(client_socket, addr):
+        """处理单个代理连接：首包判定 CONNECT / 普通 HTTP
+
+        必须整体兜异常：首包 recv 被对端 RST（手机广告 SDK 常见）、畸形 CONNECT
+        （端口非数字 / IPv6 中括号）都会打断上层 accept 循环，导致 5051 静默不再监听。
+        """
+        try:
+            client_socket.settimeout(20)  # 首包最多等 20s，避免沉默连接长期占用
+            first = client_socket.recv(4096)
+            if not first:
+                client_socket.close()
+                return
+            client_socket.settimeout(None)  # 首包后取消超时：隧道 / 中继需要长连接
+            request_data = first.decode('utf-8', errors='ignore')
+
+            if request_data.startswith("CONNECT"):
+                # 解析目标主机和端口（兼容 host:port 与 IPv6 的 [::1]:port）
+                lines = request_data.split('\r\n')
+                parts = lines[0].split(" ")
+                if len(parts) < 2:
+                    client_socket.close()
+                    return
+                host_port = parts[1]
+                if host_port.startswith("[") and "]" in host_port:
+                    target_host = host_port[1:host_port.find("]")]
+                    port_str = host_port[host_port.find("]") + 1:].lstrip(":")
+                else:
+                    target_host, _, port_str = host_port.rpartition(":")
+                    if not target_host:
+                        target_host, port_str = host_port, ""
+                target_port = int(port_str) if port_str.isdigit() else 443
+
+                # 诊断留痕：手机 / IDE 是否真的连上了 5051，目标域名是什么
+                _save_proxy_debug("CONNECT", addr[0], "%s:%s" % (target_host, target_port))
+                handle_connect_tunnel(client_socket, target_host, target_port, addr)
+            else:
+                # 普通 HTTP 代理请求：原样转交 5050（复用其映射匹配/转发/mock 逻辑）
+                _save_proxy_debug("HTTP5051", addr[0], request_data.split('\r\n')[0])
+                _relay_http_proxy_to_web(client_socket, first)
+        except Exception as e:
+            print(f"[Proxy 5051] 连接处理异常（已忽略）: {type(e).__name__}: {e}")
+            _save_proxy_debug("ERROR", addr[0] if addr else "-", "%s: %s" % (type(e).__name__, e))
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+
     def start_https_proxy():
         proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         proxy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        proxy_socket.bind(('0.0.0.0', 5051))  # HTTPS 代理端口，监听所有网卡
-        proxy_socket.listen(100)
-        
+        proxy_socket.bind(('0.0.0.0', 5051))  # 代理端口，监听所有网卡（小程序 IDE / 手机只填这一个）
+        proxy_socket.listen(200)
+
         while True:
-            client_socket, addr = proxy_socket.accept()
-            # 读取 CONNECT 请求
-            request_data = client_socket.recv(4096).decode('utf-8', errors='ignore')
-            
-            if request_data.startswith("CONNECT"):
-                # 解析目标主机和端口
-                lines = request_data.split('\r\n')
-                connect_line = lines[0]  # CONNECT host:port HTTP/1.1
-                parts = connect_line.split(" ")
-                if len(parts) >= 2:
-                    host_port = parts[1]
-                    host_parts = host_port.split(":")
-                    target_host = host_parts[0]
-                    target_port = int(host_parts[1]) if len(host_parts) > 1 else 443
-                    
-                    # 在新线程中处理隧道
-                    threading.Thread(
-                        target=handle_connect_tunnel,
-                        args=(client_socket, target_host, target_port, addr)
-                    ).start()
-            else:
-                client_socket.close()
+            try:
+                client_socket, addr = proxy_socket.accept()
+            except Exception as e:
+                print(f"[Proxy 5051] accept 异常，继续监听: {type(e).__name__}: {e}")
+                time.sleep(0.2)
+                continue
+            # 每个连接独立线程：单条连接异常/沉默连接不得阻塞或打死 accept 循环
+            threading.Thread(target=_handle_proxy_client, args=(client_socket, addr),
+                             daemon=True).start()
     
     # 在后台启动 HTTPS 代理
     threading.Thread(target=start_https_proxy, daemon=True).start()

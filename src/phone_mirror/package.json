@@ -1,0 +1,13 @@
+{
+  "name": "phone-mirror",
+  "version": "1.0.0",
+  "private": true,
+  "description": "极简手机投屏：adb/scrcpy 画面 + 点击操作，无录制无回放",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

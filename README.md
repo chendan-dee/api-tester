@@ -17,6 +17,7 @@
 │   ├── runner.py          ← 命令行运行器
 │   ├── printer.py         ← 打印/报告模块
 │   ├── scheduler.py       ← 定时任务调度
+│   ├── settings_store.py  ← 统一配置存储（data/settings.json）
 │   ├── seqvars.py         ← 自增变量
 │   ├── dataset.py         ← 参数化数据集
 │   ├── scripts.py         ← 前后置脚本执行
@@ -31,15 +32,16 @@
 ├── tests/                 ← 回归测试（pytest）
 ├── cases/                 ← 接口用例（example.json 为示例）
 ├── data/                  ← 持久化配置（运行时自动生成）
-│   ├── _variables.json        ← 全局变量
+│   ├── settings.json          ← 统一配置：变量/环境/数据源/Mock/远程映射/设置/抓包端口/调度/待办/互传门禁
 │   ├── _workbench_notes.json  ← 工作台笔记
-│   ├── _workbench_todos.json  ← 待办事项
-│   ├── _mock_proxy.json       ← Mock 代理映射
-│   ├── _remote_proxy.json     ← 远程代理配置
-│   ├── _capture_*.json        ← 抓包配置 / 范围 / Mock
-│   ├── _schedule_tasks.json   ← 定时任务
+│   ├── _workbench_quick_notes.json ← 随心记
+│   ├── _transfer_items.json   ← 文件互传记录（高频轮询写）
+│   ├── _transfer_devices.json ← 互传设备名
+│   ├── _capture_*.json        ← 抓包范围 / 改包规则 / 引擎配置（mitmproxy 子进程直读，跨进程不可合并）
+│   ├── _record_status.json    ← 录制控制面板状态（PyQt 子进程读写）
 │   ├── _datasets/             ← 参数化数据集
 │   ├── _schedule_params/      ← 定时任务参数化文件
+│   ├── _schedule_runs/        ← 定时任务执行结果
 │   ├── localdb/               ← 本地 SQLite 库
 │   └── thumbs/                ← 文件互传缩略图缓存
 ├── templates/             ← HTML 页面模板（index.html 桌面端、mobile.html 手机端）
@@ -110,6 +112,8 @@ python -m pytest -q
 - 拦截指定 URL 并返回自定义的 Mock 数据，无需启动外部 Mock 服务，直接在界面中配置映射
 - 支持两种接入方式：通过代理 URL 直接访问，或开启系统代理让流量自动经过本服务
 - 支持配置多个响应报文并一键切换，方便测试不同场景
+- 响应报文只有两种形态，由页签决定：普通报文（完全 Mock，返回你配的状态码/响应头/响应体）/ 真实报文（请求照常打到真实服务，命中后先挂起，看清或改完报文再放行，60 秒未处理自动原样放行）
+- 抓包页的「改包 Mock」另有返回配置报文 / 仅延时透传 / 真实响应改字段三种模式；抓包侧由引擎在响应阶段就地改写，请求天然只发一次，无需缓存
 
 ### 远程映射
 
@@ -148,12 +152,13 @@ python -m pytest -q
 | 数据 | 存储位置 |
 |------|---------|
 | YAML 接口用例 | `cases/` 目录 |
-| 全局变量配置 | `data/_variables.json` |
-| 工作台笔记 | `data/_workbench_notes.json` |
-| 待办事项 | `data/_workbench_todos.json` |
-| Mock 代理映射 | `data/_mock_proxy.json` |
-| 远程代理配置 | `data/_remote_proxy.json` |
-| 文件传输设置 | `data/` 下相关文件 |
+| 变量 / 环境 / 数据源 / Mock 代理 / 远程映射 / 定时任务 / 待办 / 抓包端口 / 互传门禁 | `data/settings.json`（一项一个顶层段落） |
+| 工作台笔记 / 随心记 | `data/_workbench_notes.json`、`data/_workbench_quick_notes.json`（打字自动保存，单文件更安全） |
+| 文件互传记录 / 设备 | `data/_transfer_*.json` |
+| 抓包范围 / 改包规则 / 引擎配置 | `data/_capture_*.json`（mitmproxy 子进程跨进程直读） |
+| 录制面板状态 | `data/_record_status.json` |
+
+> 旧版分散的 `_variables.json` / `_mock_proxy.json` / `config.json` 等在启动时会**一次性并入 `settings.json`**（逐项校验通过后删源文件），旧文件不需要手动处理。
 
 > **迁移时**：直接复制整个项目文件夹到新位置即可，所有数据跟着走。
 
