@@ -8,6 +8,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "hdckit": "^0.12.1"
   }
 }

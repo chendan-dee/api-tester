@@ -57,21 +57,19 @@
 
 ## 启动方式
 
-### 方式一：双击 exe（推荐）
+### 方式一：双击 exe（需先本地打包）
 
 直接双击 `工具箱.exe`，会自动打开浏览器访问 `http://本机IP:5050`。
 
+> exe 是构建产物（`*.exe` 不进仓库），用 `src/工具箱.spec` 跑 PyInstaller 即可重新生成；没打包时用方式二。
 > exe 是无控制台窗口模式，后台运行。如需退出，在任务管理器中结束进程即可。
 
 ### 方式二：源码启动
 
-1. 安装 Python 3.8+
-2. 安装依赖：
+1. 安装 Python 3.12+（requirements 里的 mitmproxy 12 / numpy 2 / opencv 5 需要）
+2. 双击 `启动.bat`（会自动定位解释器，依赖缺失时一键安装）；或手动：
    ```
    pip install -r requirements.txt
-   ```
-3. 双击 `启动.bat`，或命令行运行：
-   ```
    python app.py
    ```
 
@@ -80,7 +78,7 @@
 - **无外网 CDN 依赖**：页面所需 CSS/JS 均内联在 `templates/index.html` 或已本地化到 `static/`，断网环境可正常使用。
 - **手机投屏依赖已随仓库**：`src/phone_mirror/tools/` 内含 `adb.exe`（Android）、`hdc.exe`（鸿蒙）、`scrcpy-server.jar`，`src/phone_mirror/node_modules/` 内含 `ws` / `hdckit` 及其全部依赖链，clone 后无需 `npm install`；仅需本机装 Node 18+ 运行时。
 - **证书首次自动生成**：`certs/` 不进仓库（含 CA 私钥），首次启动时自动生成自签 CA，扫码装到手机即可抓 HTTPS。
-- **ffmpeg（可选）**：文件互传功能收到 H.265 编码视频时，会调用系统 PATH 中的 ffmpeg 转码为 H.264 以保证浏览器可播放；未安装 ffmpeg 不影响其他功能，仅跳过转码。
+- **录制编码自带 ffmpeg**：`imageio-ffmpeg` 随 pip 装好并自带二进制，录制按 CRF 控画质；系统 PATH 里的 ffmpeg 只影响文件互传收到 H.265 视频时的转码，未安装不影响其他功能。
 
 ### 回归测试
 

@@ -16,6 +16,8 @@ qrcode[pil]>=7.0
 
 # 数据生成
 faker>=18.0.0
+# 正则型字段按正则逐字符生成；缺失时退化为固定 8 位随机串
+rstr>=3.2.0
 
 # 报表导出
 pandas>=1.5.0
@@ -39,6 +41,8 @@ mss>=10.0.0
 opencv-python>=4.8.0
 PyQt5>=5.15.9
 numpy>=1.24.0
+# 录制工具栏的窗口查找 / 穿透 / 区域框选（win32gui 等）；uiautomation 也会带上，这里显式声明
+pywin32>=306
 
 # 录制抓屏后端：dxcam 走 DXGI 桌面复制（GPU），1080p 可达 50+fps；
 # 缺失或运行异常时录制器自动回退 GDI（BitBlt，1080p 约 20fps）

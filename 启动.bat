@@ -33,9 +33,9 @@ if %errorlevel% neq 0 (
 
 REM ---- 2) Dependency check: auto one-click install when anything is missing ----
 echo   Checking dependencies...
-"%PYEXE%" -c "import flask,requests,yaml,cryptography,qrcode,faker,pandas,openpyxl,colorama" >nul 2>&1
+"%PYEXE%" -c "import flask,requests,cryptography,qrcode,faker,pandas,openpyxl,colorama" >nul 2>&1
 if %errorlevel% neq 0 goto :deps_install
-"%PYEXE%" -c "import importlib.util as u,sys;sys.exit(0 if all(u.find_spec(m) for m in ['mitmproxy','mss','cv2','numpy','PyQt5','uiautomation']) else 1)" >nul 2>&1
+"%PYEXE%" -c "import importlib.util as u,sys;sys.exit(0 if all(u.find_spec(m) for m in ['mitmproxy','mss','cv2','numpy','PyQt5','uiautomation','win32api','dxcam','imageio_ffmpeg','pymysql','xlrd']) else 1)" >nul 2>&1
 if %errorlevel% neq 0 goto :deps_install
 goto :deps_ok
 
@@ -49,7 +49,7 @@ if errorlevel 1 (
     echo   [Deps] Mirror failed, retrying with default index...
     "%PYEXE%" -m pip install -r "%~dp0requirements.txt" --disable-pip-version-check
 )
-"%PYEXE%" -c "import flask,requests,yaml,cryptography,qrcode,faker,pandas,openpyxl,colorama" >nul 2>&1
+"%PYEXE%" -c "import flask,requests,cryptography,qrcode,faker,pandas,openpyxl,colorama" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo   [ERROR] Dependency install incomplete. Check network and run this script again.
