@@ -33,7 +33,7 @@ data/*.sqlite
 # certificates / private keys - never commit
 certs/
 
-# 投屏子服务：依赖走 npm install，不进仓库
+# 投屏子服务：依赖已随仓库分发（见文件末的例外），无需 npm install
 node_modules/
 
 # temp & verification artifacts
@@ -42,4 +42,11 @@ _verify_shots/
 _tmp_*
 _compat_*.db
 *.bak
+
+# ── 例外：投屏子服务把运行依赖一起入库，clone 下来直接可用 ──
+# ws / hdckit（含 agent.so）及其依赖链；node_modules 目录本身也要先解除忽略，否则子项无法回加
+!src/phone_mirror/node_modules/
+!src/phone_mirror/node_modules/**
+# hdc.exe（鸿蒙）、adb.exe + 两个 DLL（Android）、scrcpy-server.jar（H.264 采集）
+!src/phone_mirror/tools/**
 

@@ -27,6 +27,7 @@
 │   ├── curl2yaml.py       ← curl 转 YAML
 │   ├── capture/           ← 抓包引擎（mitmproxy addon）
 │   ├── db/                ← 数据库工作台（连接器 + 本地库）
+│   ├── phone_mirror/      ← 手机投屏子服务（Node 独立进程，自带 adb/hdc/scrcpy-server 与 npm 依赖）
 │   ├── recorder_tool/     ← 屏幕录制工具条
 │   └── 工具箱.spec  ← PyInstaller 打包配置
 ├── tests/                 ← 回归测试（pytest）
@@ -77,6 +78,8 @@
 ### 外部依赖说明
 
 - **无外网 CDN 依赖**：页面所需 CSS/JS 均内联在 `templates/index.html` 或已本地化到 `static/`，断网环境可正常使用。
+- **手机投屏依赖已随仓库**：`src/phone_mirror/tools/` 内含 `adb.exe`（Android）、`hdc.exe`（鸿蒙）、`scrcpy-server.jar`，`src/phone_mirror/node_modules/` 内含 `ws` / `hdckit` 及其全部依赖链，clone 后无需 `npm install`；仅需本机装 Node 18+ 运行时。
+- **证书首次自动生成**：`certs/` 不进仓库（含 CA 私钥），首次启动时自动生成自签 CA，扫码装到手机即可抓 HTTPS。
 - **ffmpeg（可选）**：文件互传功能收到 H.265 编码视频时，会调用系统 PATH 中的 ffmpeg 转码为 H.264 以保证浏览器可播放；未安装 ffmpeg 不影响其他功能，仅跳过转码。
 
 ### 回归测试
